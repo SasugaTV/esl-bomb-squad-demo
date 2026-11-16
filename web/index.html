@@ -1,0 +1,1259 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ESL Bomb Squad Demo</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.9/babel.min.js"></script>
+<script src="manual-kit.js"></script>
+<script src="pixel.js"></script>
+<script src="sprites/monster.js"></script>
+<script src="sprites/people.js"></script>
+<script src="sprites/food.js"></script>
+<script src="sprites/animals.js"></script>
+<script src="sprites/weather.js"></script>
+<script src="sprites/school.js"></script>
+<script src="sprites/places.js"></script>
+<script src="sprites/desk.js"></script>
+<script src="sprites/house.js"></script>
+<script src="sprites/toys.js"></script>
+<script src="sprites/feelings.js"></script>
+<script src="sprites/clinic.js"></script>
+<script src="sprites/race.js"></script>
+<script src="sprites/wires.js"></script>
+<script src="sprites/symbols.js"></script>
+<!-- New modules register themselves in window.EXTRA_MODULES (see web/modules/). -->
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { useState, useEffect, useCallback, useRef, useMemo } = React;
+/* Solo test mode: open index.html?test. Adds the Manual button and SOLVE/STRIKE buttons on the bomb screen. Students never see it. */
+const TEST_MODE = new URLSearchParams(location.search).has("test");
+
+/* ===== UTILITIES ===== */
+const generateSerialNumber = () => {
+  const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ";
+  const nums = "0123456789";
+  const pick = (s) => s[Math.floor(Math.random() * s.length)];
+  return `${pick(chars)}${pick(chars)}${pick(nums)}${pick(nums)}${pick(nums)}-${pick(chars)}${pick(nums)}${pick(chars)}${pick(nums)}${pick(nums)}`;
+};
+/* ===== BOMB FEATURES =====
+   Things on the bomb itself that manual rules can point at, besides the serial number:
+   its color, how many batteries it has, and one sticker. The Defuser sees pictures only (no words),
+   so they have to say it in English: "The bomb is green. It has three batteries. There is a cat."
+   Each feature is read by one module: color = Vending Machine, batteries = Big Button, sticker = Word Buttons. */
+const BOMB_COLORS = { red:"#e04848", blue:"#3f6fd8", green:"#3f9e45", yellow:"#f7d843", purple:"#a65bd6" };
+const BOMB_STICKERS = [...["cat","dog","bird","rabbit","monkey","tiger"].map(name=>({name,kind:"animal"})), ...["apple","banana","cake","egg","pizza","bread"].map(name=>({name,kind:"food"}))];
+const makeBomb = () => { const pick=(a)=>a[Math.floor(Math.random()*a.length)]; return { color:pick(Object.keys(BOMB_COLORS)), batteries:1+Math.floor(Math.random()*4), sticker:pick(BOMB_STICKERS) }; };
+const DEFAULT_BOMB = { color:"red", batteries:1, sticker:BOMB_STICKERS[0] }; /* for a module drawn outside a bomb (test pages) */
+const stickerSrc = (st) => st.kind==="animal" ? PX.animal(st.name) : PX.food(st.name);
+const batterySrc = (() => { let src=null; return () => src || (src = PX.render(8, 14, [{ sprite: PX.sprite("battery", ["..gggg..", ".yyyyyy.", ".yYYYYy.", ".GGGGGG.", ".GGGGGG.", ".GGWGGG.", ".GWWWGG.", ".GGWGGG.", ".GGGGGG.", ".GGGGGG.", ".GGGGGG.", ".GGGGGG.", ".GGGGGG.", "..GGGG.."]) }])); })();
+const NUMBER_WORDS = ["zero","one","two","three","four","five"];
+
+const getLastDigit = (sn) => parseInt(sn.replace(/[^0-9]/g, "").slice(-1)) || 0;
+const getFirstDigit = (sn) => parseInt(sn.replace(/[^0-9]/g, "")[0]) || 0;
+const getLastLetter = (sn) => sn.split("").filter(c => /[A-Z]/i.test(c)).pop()?.toUpperCase() || "A";
+const getFirstLetter = (sn) => sn.split("").find(c => /[A-Z]/i.test(c))?.toUpperCase() || "A";
+const getAllDigits = (sn) => sn.replace(/[^0-9]/g, "");
+const countLetters = (sn) => sn.replace(/[^A-Z]/gi, "").length;
+
+/* DEMO BUILD: only these modules are in the game and the manual. */
+const DEMO_MODULES = ["colorWires","guessWho","monsterLab","bigButton","symbolKeypad"];
+const MODULES_LIST = [
+  { id:"colorWires", name:"🔌 Color Wires", type:"colorWires", difficulty:"A1" },
+  { id:"userName", name:"👤 User Name", type:"userName", difficulty:"A1" },
+  { id:"monsterLab", name:"👾 Monster Lab", type:"monsterLab", difficulty:"A1" },
+  { id:"guessWho", name:"🕵️ Guess Who", type:"guessWho", difficulty:"A1" },
+  { id:"vendingMachine", name:"🏭 Vending Machine", type:"vendingMachine", difficulty:"A1" },
+  { id:"symbolKeypad", name:"🔣 Symbol Keypad", type:"symbolKeypad", difficulty:"A1" },
+  { id:"numberKeypad", name:"🔢 Number Keypad", type:"numberKeypad", difficulty:"A2" },
+  { id:"bigButton", name:"🔴 Big Button", type:"bigButton", difficulty:"A2" },
+  { id:"sliders", name:"🎚️ Sliders", type:"sliders", difficulty:"A2" },
+  { id:"crackTheCode", name:"🔐 Crack the Code", type:"crackTheCode", difficulty:"A2" },
+  { id:"wordButtons", name:"📝 Word Buttons", type:"wordButtons", difficulty:"A2" },
+  { id:"memory", name:"🧠 Memory", type:"memory", difficulty:"A2" },
+  { id:"symbolPanel", name:"🎨 Symbol Panel", type:"symbolPanel", difficulty:"B1" },
+  { id:"colorSwitchboard", name:"🎛️ Switchboard", type:"colorSwitchboard", difficulty:"B1" },
+  { id:"worldClock", name:"🌍 World Clock", type:"worldClock", difficulty:"B1" },
+  { id:"combinationLock", name:"🔒 Combo Lock", type:"combinationLock", difficulty:"B1" },
+].filter(m=>DEMO_MODULES.includes(m.id)); /* DEMO: six easy modules only */
+
+/* ===================== MODULES ===================== */
+
+/* COLOR WIRES */
+const ColorWiresModule = ({ serialNumber, onSuccess, onStrike }) => {
+  const wireColors = ["red","blue","yellow","green","white","black"];
+  const [wires] = useState(() => {
+    const count = Math.floor(Math.random()*3)+3;
+    const pick=(a)=>a[Math.floor(Math.random()*a.length)];
+    // color decides the answer; bends, terminals, shade and how/where it gets cut are decoration, so no two wires look alike.
+    return Array.from({length:count},(_,i)=>({id:i,color:pick(wireColors),cut:false,shape:pick(PX.wire.SHAPES),ends:pick(PX.wire.ENDS),tone:Math.random()*2-1,cutAt:0.25+Math.random()*0.5,gap:5+Math.floor(Math.random()*6),cutStyle:pick(PX.wire.CUTS)}));
+  });
+  const [wireState,setWireState] = useState(wires);
+  const [solved,setSolved] = useState(false);
+  const getCorrectWire = () => {
+    const ld = getLastDigit(serialNumber); const hasRed = wires.some(w=>w.color==="red");
+    if(wires.length===3){if(!hasRed)return 1;if(wires[wires.length-1].color==="white")return wires.length-1;if(wires.filter(w=>w.color==="blue").length>1)return wires.map(w=>w.color).lastIndexOf("blue");return wires.length-1;}
+    else if(wires.length===4){if(wires.filter(w=>w.color==="red").length>1&&ld%2!==0)return wires.map(w=>w.color).lastIndexOf("red");if(wires[wires.length-1].color==="yellow"&&!hasRed)return 0;if(wires.filter(w=>w.color==="blue").length===1)return 0;if(wires.filter(w=>w.color==="yellow").length>1)return wires.length-1;return 1;}
+    else{if(wires[wires.length-1].color==="black"&&ld%2!==0)return 3;if(wires.filter(w=>w.color==="red").length===1&&wires.filter(w=>w.color==="yellow").length>1)return 0;if(!wires.some(w=>w.color==="black"))return 1;return 0;}
+  };
+  const cutWire = (idx) => {
+    if(solved||wireState[idx].cut)return;
+    setWireState(ws=>ws.map((w,i)=>i===idx?{...w,cut:true}:w));
+    if(idx===getCorrectWire()){setSolved(true);onSuccess();}else onStrike();
+  };
+  return (<div className="module-content" style={{display:"flex",flexDirection:"column",minHeight:"180px"}}><h3>🔌 COLOR WIRES</h3><p className="module-hint">Cut the correct wire!</p>
+    <div className="wire-container">{wireState.map((w,i)=>(<button key={w.id} onClick={()=>cutWire(i)} disabled={solved||w.cut} className={`wire ${w.cut?"cut":""}`}><img className="pixel-art" alt={`${w.cut?"cut ":""}${w.color} wire`} src={PX.wire(w)} width={PX.wire.size.w*4} height={PX.wire.size.h*4}/></button>))}</div></div>);
+};
+
+/* USER NAME */
+const UserNameModule = ({ serialNumber, onSuccess, onStrike }) => {
+  const names={A:"ALICE",B:"BOB",C:"CHARLIE",D:"DAVID",E:"EVE",F:"FRANK",G:"GRACE",H:"HENRY",I:"IRIS",J:"JACK",K:"KATE",L:"LEO",M:"MARY",N:"NOAH",O:"OLIVE",P:"PETER",Q:"QUINN",R:"ROSE",S:"SAM",T:"TOM",U:"UMA",V:"VERA",W:"WILL",X:"XENA",Y:"YUKI",Z:"ZARA"};
+  const correct = names[getLastLetter(serialNumber)]||"ALICE";
+  // Typed, not chosen: the Expert has to spell the name out loud (design doc §2).
+  const [text,setText] = useState("");
+  const [solved,setSolved] = useState(false);
+  const [wrong,setWrong] = useState(false);
+  const submit = (e) => { e&&e.preventDefault(); if(solved||!text)return; if(text===correct){setSolved(true);onSuccess();} else {onStrike();setWrong(true);setTimeout(()=>setWrong(false),600);} };
+  return (<div className="module-content"><h3>👤 USER NAME</h3><p className="module-hint">ENTER USER NAME</p>
+    <form onSubmit={submit} style={{display:"flex",gap:"0.5rem"}}>
+      <input value={text} onChange={e=>setText(e.target.value.toUpperCase().replace(/[^A-Z]/g,""))} disabled={solved} maxLength={12} autoCapitalize="characters" autoComplete="off" autoCorrect="off" spellCheck={false} placeholder="NAME"
+        style={{flex:1,minWidth:0,padding:"0.6rem",fontSize:"1.3rem",fontFamily:"'Orbitron',sans-serif",letterSpacing:"3px",background:"#0a1520",color:solved?"#4caf50":"#0ff",border:`2px solid ${wrong?"#ff3b3b":solved?"#4caf50":"#333"}`,borderRadius:"4px"}}/>
+      <button type="submit" disabled={solved||!text} className={`option-btn ${solved?"correct":""}`} style={{minWidth:"90px"}}>{solved?"✓":"SUBMIT"}</button>
+    </form></div>);
+};
+
+
+/* MONSTER LAB */
+const MonsterLabModule = ({ serialNumber, onSuccess, onStrike }) => {
+  const monsterNames=["ZORG","BLIP","FLOP","MEEP"];
+  const eyeCounts=[1,2,3,4]; const armTypes=["tentacles","robot","furry"]; const skinColors=["purple","green","orange"];
+  
+  const pick=(a)=>a[Math.floor(Math.random()*a.length)];
+  // eyes / arms / color decide the answer; every other part is random decoration from the parts kit.
+  const [monster] = useState(()=>{const P=PX.monster.PARTS;return{eyes:pick(eyeCounts),arms:pick(armTypes),color:pick(skinColors),head:pick(P.head),body:pick(P.body),legs:pick(P.legs),eyeStyle:pick(P.eyeStyle),mouth:pick(P.mouth),nose:pick(P.nose),horns:pick(P.horns)};});
+  const ld = getLastDigit(serialNumber);
+  const byEyes={1:"MEEP",2:"BLIP",3:"ZORG",4:"FLOP"}, byColor={purple:"ZORG",green:"BLIP",orange:"FLOP"}, byArms={tentacles:"BLIP",robot:"MEEP",furry:"FLOP"};
+  const correct = ld<=2?byEyes[monster.eyes]:ld<=5?byColor[monster.color]:ld<=7?byArms[monster.arms]:monsterNames[monster.eyes%4];
+  const [solved,setSolved] = useState(false);
+  return (<div className="module-content"><h3>👾 MONSTER LAB</h3>
+    <div className="monster-display"><img className="pixel-art" alt="monster" src={PX.monster(monster)} width={PX.monster.size.w*4} height={PX.monster.size.h*4}/></div>
+    <div className="options-grid">{monsterNames.map(n=>(<button key={n} onClick={()=>{if(solved)return;if(n===correct){setSolved(true);onSuccess();}else onStrike();}} disabled={solved} className={`option-btn ${solved&&n===correct?"correct":""}`}>{n}</button>))}</div></div>);
+};
+
+/* GUESS WHO */
+// gender + eyes + hair decide the name (2 × 3 × 5 = 30 names, one table per gender). The manual reads the same table.
+const GUESS_EYES=["Brown","Blue","Green"]; const GUESS_HAIR=["Black","Brown","Blonde","Red","Gray"];
+const GUESS_NAMES={
+  boy:[["TOM","BEN","SAM","MAX","LEO"],["JACK","DAN","KEN","ROY","NED"],["TED","BOB","JIM","RAY","ZAC"]],
+  girl:[["AMY","ANN","EVA","MAY","SUE"],["LILY","ROSE","KIM","JOY","MIA"],["ZOE","IVY","LIZ","PAM","DOT"]],
+};
+const GuessWhoModule = ({ serialNumber, onSuccess, onStrike }) => {
+  const pick=(a)=>a[Math.floor(Math.random()*a.length)];
+  // hairstyle and shirt are decoration.
+  const [suspect] = useState(()=>{const gender=pick(["boy","girl"]);return{gender,eye:pick(GUESS_EYES),hair:pick(GUESS_HAIR),style:pick(gender==="girl"?["long","bun"]:["short","spiky"]),shirt:Math.floor(Math.random()*4)};});
+  const ei=GUESS_EYES.indexOf(suspect.eye), hi=GUESS_HAIR.indexOf(suspect.hair);
+  const correct = GUESS_NAMES[suspect.gender][ei][hi];
+  // Always offer the other-gender twin (same eyes and hair), so "boy or girl?" matters.
+  const twin = GUESS_NAMES[suspect.gender==="boy"?"girl":"boy"][ei][hi];
+  const [options] = useState(()=>{const all=[...GUESS_NAMES.boy.flat(),...GUESS_NAMES.girl.flat()];const s=new Set([correct,twin]);while(s.size<4)s.add(pick(all));return[...s].sort(()=>Math.random()-0.5);});
+  const [solved,setSolved] = useState(false);
+  return (<div className="module-content"><h3>🕵️ GUESS WHO</h3>
+    <div className="monster-display"><img className="pixel-art" alt="suspect" src={PX.face({gender:suspect.gender,hair:suspect.hair.toLowerCase(),eye:suspect.eye.toLowerCase(),style:suspect.style,shirt:suspect.shirt})} width={PX.face.size.w*4} height={PX.face.size.h*4} style={{maxWidth:"160px"}}/></div>
+    <div className="options-grid">{options.map(n=>(<button key={n} onClick={()=>{if(solved)return;if(n===correct){setSolved(true);onSuccess();}else onStrike();}} disabled={solved} className={`option-btn ${solved&&n===correct?"correct":""}`} style={{fontSize:"1rem",minHeight:"48px",fontFamily:"'Orbitron',sans-serif",letterSpacing:"2px"}}>{n}</button>))}</div></div>);
+};
+
+
+/* VENDING MACHINE */
+const VendingMachineModule = ({ bomb=DEFAULT_BOMB, onSuccess, onStrike }) => {
+  const allItems=[{name:"Apple",cat:"fruit",price:150},{name:"Banana",cat:"fruit",price:100},{name:"Cookie",cat:"snack",price:175},{name:"Chips",cat:"snack",price:200},{name:"Soda",cat:"drink",price:125},{name:"Water",cat:"drink",price:75},{name:"Carrot",cat:"vegetable",price:150},{name:"Candy",cat:"snack",price:50}];
+  const [items] = useState(()=>{const s=[...allItems].sort(()=>Math.random()-0.5);return s.slice(0,4);});
+  // The bomb's color picks the rule. Every item that fits the rule is right; if none fits, the cheapest is (the manual says so).
+  const prices=items.map(i=>i.price), cheapest=items.filter(i=>i.price===Math.min(...prices));
+  const byColor={red:cheapest, blue:items.filter(i=>i.price===Math.max(...prices)), green:items.filter(i=>i.price>100&&i.price<200), yellow:items.filter(i=>i.cat!=="drink"), purple:items.filter(i=>i.price%100===50)};
+  const good=(byColor[bomb.color]||[]).length?byColor[bomb.color]:cheapest;
+  const isRight=(item)=>good.includes(item);
+  const [solved,setSolved] = useState(false);
+  const fmt = (p)=>`$${(p/100).toFixed(2)}`;
+  return (<div className="module-content"><h3>🏭 VENDING MACHINE</h3><p className="module-hint">Buy the correct item!</p>
+    <div className="options-grid">{items.map((item,i)=>(<button key={i} onClick={()=>{if(solved)return;if(isRight(item)){setSolved(item.name);onSuccess();}else onStrike();}} disabled={!!solved} className={`option-btn ${solved===item.name?"correct":""}`} style={{display:"flex",flexDirection:"column",alignItems:"center",padding:"0.6rem"}}>
+      <img className="pixel-art" alt="" src={PX.food(item.name.toLowerCase())} width={48} height={48}/><span style={{fontSize:"0.7rem"}}>{item.name}</span><span style={{fontSize:"0.65rem",color:"#f1c40f"}}>{fmt(item.price)}</span></button>))}</div></div>);
+};
+
+/* SYMBOL KEYPAD */
+// Five lists of colored pictures, written as English words. The bomb shows four pictures from one list; they are pressed
+// in that list's order. Any two lists share at most three pictures, so four pictures always point to one list.
+// The manual prints these same lists as WORDS (never pictures), so the pictures have to be said in English.
+const SYMBOL_COLUMNS=[
+  ["red star","blue moon","yellow sun","green flower","blue star","red sun"],
+  ["yellow moon","red star","green sun","blue flower","yellow sun","green star"],
+  ["blue moon","yellow flower","red moon","green flower","yellow star","blue sun"],
+  ["green star","red flower","blue star","yellow moon","red sun","green moon"],
+  ["blue flower","yellow star","red moon","green sun","red flower","blue sun"],
+];
+const symbolSrc=(item)=>{const [color,shape]=item.split(" ");return PX.glyph(shape,color);};
+const SymbolKeypadModule = ({ onSuccess, onStrike }) => {
+  const [displayed] = useState(()=>{
+    for(;;){const ci=Math.floor(Math.random()*SYMBOL_COLUMNS.length),col=SYMBOL_COLUMNS[ci];
+      const four=[...col].sort(()=>Math.random()-0.5).slice(0,4);
+      if(SYMBOL_COLUMNS.some((c,i)=>i!==ci&&four.every(x=>c.includes(x))))continue; // never true with these lists; kept in case the lists are edited
+      return{symbols:[...four].sort(()=>Math.random()-0.5),correctOrder:col.filter(x=>four.includes(x))};}
+  });
+  const [pressed,setPressed] = useState([]);
+  const [solved,setSolved] = useState(false);
+  const handlePress = (sym) => {
+    if(solved||pressed.includes(sym))return;
+    const nextCorrect = displayed.correctOrder[pressed.length];
+    if(sym===nextCorrect){const np=[...pressed,sym];setPressed(np);if(np.length===4){setSolved(true);onSuccess();}}
+    else{onStrike();setPressed([]);}
+  };
+  return (<div className="module-content"><h3>🔣 SYMBOL KEYPAD</h3><p className="module-hint">Press the pictures in the correct order</p>
+    <div style={{display:"flex",justifyContent:"center",gap:"0.5rem",marginBottom:"0.75rem"}}>{[0,1,2,3].map(i=>(<span key={i} style={{width:"28px",height:"28px",display:"flex",alignItems:"center",justifyContent:"center",background:"#1a1a2e",border:`2px solid ${pressed[i]?"#4caf50":"#333"}`,borderRadius:"6px",color:"#555",fontSize:"0.9rem"}}>{pressed[i]?<img className="pixel-art" alt={pressed[i]} src={symbolSrc(pressed[i])} width={20} height={20}/>:"?"}</span>))}</div>
+    <div className="options-grid">{displayed.symbols.map(s=>(<button key={s} onClick={()=>handlePress(s)} disabled={solved||pressed.includes(s)} className={`symbol-btn ${pressed.includes(s)?"correct":""}`} style={{display:"flex",flexDirection:"column",alignItems:"center",gap:"0.2rem"}}><img className="pixel-art" alt={s} src={symbolSrc(s)} width={48} height={48}/><span style={{fontSize:"0.7rem",color:"#ccc"}}>{s}</span></button>))}</div></div>);
+};
+
+/* NUMBER KEYPAD */
+// The bomb shows three numbers (1–12) as digits. The Defuser says them; the Expert taps the same three NUMBER WORDS in the
+// manual, and the manual answers with two number words to press. The answer comes from the three numbers (keypadAnswer),
+// so there is no code to share, the Expert is needed every round, and a misheard number gives a wrong answer.
+const KEYPAD_WORDS=["","one","two","three","four","five","six","seven","eight","nine","ten","eleven","twelve"];
+const keypadAnswer=([a,b,c])=>[((a*7+b*3+c*5+1)%12)+1,((a*5+b*11+c*2+6)%12)+1];
+const NumberKeypadModule = ({ onSuccess, onStrike }) => {
+  const roll=()=>Array.from({length:3},()=>1+Math.floor(Math.random()*12));
+  const [shown,setShown] = useState(roll);
+  const [input,setInput] = useState([]);
+  const [solved,setSolved] = useState(false);
+  const handlePress = (n) => {
+    if(solved)return; const next=[...input,n];
+    if(next.length<2){setInput(next);return;}
+    const ans=keypadAnswer(shown);
+    if(next[0]===ans[0]&&next[1]===ans[1]){setInput(next);setSolved(true);onSuccess();}
+    else{onStrike();setInput([]);setShown(roll());} // new numbers after a mistake, so the answer cannot be found by trying keys
+  };
+  return (<div className="module-content"><h3>🔢 NUMBER KEYPAD</h3><p className="module-hint">Say the three numbers. Then press two.</p>
+    <div className="keypad-display" style={{letterSpacing:"0.3em"}}>{shown.join(" · ")}</div>
+    <div style={{display:"flex",justifyContent:"center",gap:"0.4rem",margin:"0.5rem 0"}}>{[0,1].map(i=>(<span key={i} style={{minWidth:"2.6rem",padding:"0.25rem",textAlign:"center",background:"#0a1520",border:`2px solid ${solved?"#4caf50":"#333"}`,borderRadius:"6px",color:"#0ff",fontFamily:"'Orbitron',sans-serif"}}>{input[i]||"?"}</span>))}</div>
+    <div className="keypad-grid" style={{gridTemplateColumns:"repeat(4,1fr)"}}>{[1,2,3,4,5,6,7,8,9,10,11,12].map(n=>(<button key={n} onClick={()=>handlePress(n)} disabled={solved} className="keypad-btn">{n}</button>))}</div>
+    <button onClick={()=>!solved&&setInput([])} className="clear-btn">Clear</button></div>);
+};
+/* Paper version: keypadAnswer is a sum, so it splits into one points table per answer.
+   Answer = the three points added up, minus 12 until it is 12 or less (checked against keypadAnswer for all 1728 inputs). */
+const KEYPAD_POINTS=[[a=>7*a%12,b=>3*b%12,c=>(5*c+1)%12+1],[a=>5*a%12,b=>11*b%12,c=>(2*c+6)%12+1]];
+const keypadFromPoints=(nums,k)=>{let s=KEYPAD_POINTS[k].reduce((t,f,i)=>t+f(nums[i]),0);while(s>12)s-=12;return s;};
+const NumberKeypadPrint = () => {
+  const ex=[4,9,2], ans=keypadAnswer(ex);
+  return (<div>
+    <p><strong>Ask:</strong> "What are the three numbers?" Write them down in order.</p>
+    <p><strong>Step 1:</strong> In Table A, find the 1st number in the "1st" column, the 2nd number in the "2nd" column and the 3rd number in the "3rd" column. Add the three points.</p>
+    <p><strong>Step 2:</strong> If the total is more than 12, take away 12. Still more than 12? Take away 12 again. This is the <strong>first</strong> number to press.</p>
+    <p><strong>Step 3:</strong> Do the same with Table B. This is the <strong>second</strong> number to press.</p>
+    <div className="mk-grid">{["A","B"].map((L,k)=>(<table key={L} className="manual-table"><thead><tr><th>Table {L}</th><th>1st</th><th>2nd</th><th>3rd</th></tr></thead><tbody>
+      {KEYPAD_WORDS.slice(1).map((w,i)=>(<tr key={w}><td><strong>{w}</strong></td>{KEYPAD_POINTS[k].map((f,j)=><td key={j}>{f(i+1)}</td>)}</tr>))}</tbody></table>))}</div>
+    <p style={{color:"#888",fontStyle:"italic"}}>Example: {ex.map(n=>KEYPAD_WORDS[n]).join(", ")}. Table A: {KEYPAD_POINTS[0].map((f,i)=>f(ex[i])).join(" + ")} = {KEYPAD_POINTS[0].reduce((t,f,i)=>t+f(ex[i]),0)} → {KEYPAD_WORDS[ans[0]]}. Table B: {KEYPAD_POINTS[1].map((f,i)=>f(ex[i])).join(" + ")} = {KEYPAD_POINTS[1].reduce((t,f,i)=>t+f(ex[i]),0)} → {KEYPAD_WORDS[ans[1]]}. Press {KEYPAD_WORDS[ans[0]].toUpperCase()}, then {KEYPAD_WORDS[ans[1]].toUpperCase()}.</p>
+    <p style={{color:"#888",fontStyle:"italic"}}>After a mistake the bomb shows three new numbers. Start again.</p>
+  </div>);
+};
+const NumberKeypadManual = () => {
+  if(React.useContext(MANUAL.Print)) return <NumberKeypadPrint/>;
+  const [picked,setPicked] = useState([]);
+  const ans = picked.length===3?keypadAnswer(picked):null;
+  return (<div>
+    <p><strong>Ask:</strong> "What are the three numbers?"</p>
+    <p><strong>Step 1:</strong> Tap the three numbers here, in the same order.</p>
+    <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:"0.3rem",margin:"0.5rem 0"}}>{KEYPAD_WORDS.slice(1).map((w,i)=>(<button key={w} className="manual-key" disabled={picked.length>=3} onClick={()=>setPicked([...picked,i+1])}>{w}</button>))}</div>
+    <p className="manual-readout">{picked.length?picked.map(n=>KEYPAD_WORDS[n]).join(", "):"—"} <button className="manual-key" style={{marginLeft:"0.5rem"}} onClick={()=>setPicked([])}>CLEAR</button></p>
+    {ans&&<p className="manual-answer"><strong>Step 2:</strong> Tell the Defuser: "Press <strong>{KEYPAD_WORDS[ans[0]].toUpperCase()}</strong>, then <strong>{KEYPAD_WORDS[ans[1]].toUpperCase()}</strong>."</p>}
+    <p style={{color:"#888",fontStyle:"italic"}}>After a mistake the bomb shows three new numbers. Press CLEAR and start again.</p>
+  </div>);
+};
+
+/* BIG BUTTON */
+const BigButtonModule = ({ bomb=DEFAULT_BOMB, onSuccess, onStrike }) => {
+  const btnColors=["red","blue","yellow","white"]; const btnWords=["PRESS","HOLD","PUSH","CLICK"];
+  const colorHex={red:"#e74c3c",blue:"#3498db",yellow:"#f1c40f",white:"#ecf0f1"};
+  const [btnColor] = useState(()=>btnColors[Math.floor(Math.random()*4)]);
+  const [btnWord] = useState(()=>btnWords[Math.floor(Math.random()*4)]);
+  // Same order as the manual, first match wins: blue+HOLD = hold, red+PRESS = press, white = hold, 3 or 4 batteries = hold, otherwise press.
+  const shouldHold = (btnColor==="blue"&&btnWord==="HOLD")?true:(btnColor==="red"&&btnWord==="PRESS")?false:btnColor==="white"?true:bomb.batteries>=3;
+  const [holding,setHolding] = useState(false); const [holdTime,setHoldTime] = useState(0);
+  const [solved,setSolved] = useState(false); const timerRef = useRef(null);
+  // Pointer events, not mouse + touch: on a touch screen a tap fires both, which counted one wrong tap as two strikes.
+  // The press is timed with a clock (downAt); holdTime is only for the on-screen counter.
+  const downAt = useRef(null);
+  const startHold = (e) => {
+    if(solved||downAt.current!==null)return; downAt.current=Date.now(); setHolding(true); setHoldTime(0);
+    try{e.currentTarget.setPointerCapture(e.pointerId);}catch(err){}
+    timerRef.current = setInterval(()=>setHoldTime(Date.now()-downAt.current),100);
+  };
+  const endHold = () => {
+    if(solved||downAt.current===null)return; const held=Date.now()-downAt.current; downAt.current=null;
+    clearInterval(timerRef.current); setHolding(false);
+    if(shouldHold&&held>=2000){setSolved(true);onSuccess();}
+    else if(!shouldHold&&held<500){setSolved(true);onSuccess();}
+    else{onStrike();setHoldTime(0);}
+  };
+  useEffect(()=>()=>clearInterval(timerRef.current),[]);
+  return (<div className="module-content"><h3>🔴 BIG BUTTON</h3><p className="module-hint">Press or hold?</p>
+    <div style={{display:"flex",flexDirection:"column",alignItems:"center",gap:"0.75rem"}}>
+      <button onPointerDown={startHold} onPointerUp={endHold} onPointerCancel={endHold} onContextMenu={e=>e.preventDefault()} disabled={solved}
+        style={{touchAction:"none",userSelect:"none",WebkitUserSelect:"none",WebkitTouchCallout:"none",width:"120px",height:"120px",borderRadius:"50%",border:"6px solid #333",background:colorHex[btnColor],cursor:solved?"default":"pointer",fontSize:"1rem",fontFamily:"'Orbitron',sans-serif",fontWeight:"bold",color:btnColor==="yellow"||btnColor==="white"?"#333":"#fff",transform:holding?"scale(0.95)":"scale(1)",boxShadow:holding?"0 4px 10px rgba(0,0,0,0.4)":"0 8px 20px rgba(0,0,0,0.4)",transition:"all 0.2s"}}>{btnWord}</button>
+      {holding&&<div style={{background:shouldHold?"#3498db":"#e74c3c",padding:"0.3rem 1rem",borderRadius:"4px",fontSize:"0.8rem",color:"#fff"}}>{(holdTime/1000).toFixed(1)}s</div>}
+      {solved&&<div style={{color:"#4caf50",fontFamily:"'Orbitron',sans-serif"}}>✓</div>}
+    </div></div>);
+};
+
+/* SLIDERS */
+// Each slider starts on a number. A light on the panel picks one row of the manual's table, and the row says how far
+// each slider moves ("two more", "one less", "the same"). The Defuser reports the light and the three start numbers.
+const SLIDER_LIGHTS={green:"#2ecc71",white:"#ecf0f1",pink:"#f59ab8",orange:"#f39a2b"};
+const SLIDER_MOVES={green:[2,0,-1],white:[0,3,-2],pink:[-1,2,0],orange:[-3,1,2]}; // red, blue, yellow
+const moveWords=(d)=>d===0?"the same":`${["","one","two","three"][Math.abs(d)]} ${d>0?"more":"less"}`;
+const SlidersModule = ({ onSuccess, onStrike }) => {
+  const sliderColors=["red","blue","yellow"];
+  const colorHex={red:"#e74c3c",blue:"#3498db",yellow:"#f1c40f"};
+  const [light] = useState(()=>Object.keys(SLIDER_LIGHTS)[Math.floor(Math.random()*4)]);
+  const [starts] = useState(()=>sliderColors.map(()=>3+Math.floor(Math.random()*4))); // 3–6, so every move stays inside 0–9
+  const targets = starts.map((v,i)=>v+SLIDER_MOVES[light][i]);
+  const [values,setValues] = useState(starts);
+  const [solved,setSolved] = useState(false);
+  const handleChange = (idx,val) => { if(solved)return; const nv=[...values];nv[idx]=val;setValues(nv); };
+  const handleSubmit = () => {
+    if(solved)return;
+    if(values.every((v,i)=>v===targets[i])){setSolved(true);onSuccess();}else onStrike();
+  };
+  return (<div className="module-content"><h3>🎚️ SLIDERS</h3><p className="module-hint">Move each slider to the correct number</p>
+    <div style={{display:"flex",alignItems:"center",justifyContent:"center",gap:"0.6rem",marginBottom:"0.75rem"}}><span style={{fontSize:"0.75rem",color:"#888"}}>LIGHT</span><span aria-label={`${light} light`} style={{width:"28px",height:"28px",borderRadius:"50%",background:SLIDER_LIGHTS[light],boxShadow:`0 0 14px ${SLIDER_LIGHTS[light]}`,border:"2px solid #111"}}></span></div>
+    <div style={{display:"flex",flexDirection:"column",gap:"0.75rem"}}>
+      {sliderColors.map((c,i)=>(<div key={c} style={{display:"flex",alignItems:"center",gap:"0.5rem"}}>
+        <span style={{width:"16px",height:"16px",borderRadius:"50%",background:colorHex[c],flexShrink:0}}></span>
+        <span style={{fontSize:"0.65rem",color:"#888",width:"3.4rem",flexShrink:0}}>START {starts[i]}</span>
+        <input type="range" min={0} max={9} value={values[i]} onChange={e=>handleChange(i,parseInt(e.target.value))} disabled={solved} style={{flex:1,minWidth:0,accentColor:colorHex[c]}} />
+        <span style={{color:"#0ff",fontFamily:"'Orbitron',sans-serif",fontSize:"1rem",width:"1.5rem",textAlign:"center"}}>{values[i]}</span>
+      </div>))}
+    </div>
+    <button onClick={handleSubmit} disabled={solved} className={`submit-btn ${solved?"correct":""}`} style={{marginTop:"0.75rem"}}>{solved?"✓ CORRECT":"SUBMIT"}</button></div>);
+};
+
+/* CRACK THE CODE */
+// The Defuser guesses a 3-color code. The bomb answers each guess with a 4-digit CLUE NUMBER that only the manual can read:
+// the Expert types it in and gets the clue in English. So the clues arrive one guess at a time, on the Expert's side,
+// and the Expert has to keep notes of the guesses to work the code out.
+// Clue number = a random first digit, the two counts hidden behind it, and a check digit (so a mistyped number is almost always refused).
+const clueCheck=(s,a,b)=>(s*3+a*7+b+4)%10;
+const clueEncode=(right,near)=>{const s=1+Math.floor(Math.random()*9),a=(right+3*s+2)%10,b=(near+7*s+5)%10;return `${s}${a}${b}${clueCheck(s,a,b)}`;};
+const clueDecode=(code)=>{if(!/^[1-9][0-9]{3}$/.test(code))return null;const [s,a,b,k]=[...code].map(Number);if(k!==clueCheck(s,a,b))return null;const right=((a-3*s-2)%10+10)%10,near=((b-7*s-5)%10+10)%10;return right+near<=3?{right,near}:null;};
+const CRACK_FREE_GUESSES=5;
+const CrackTheCodeModule = ({ onSuccess, onStrike }) => {
+  const colors=["red","green","yellow","blue","white"];
+  const colorHex={red:"#e74c3c",green:"#2ecc71",yellow:"#f1c40f",blue:"#3498db",white:"#ecf0f1"};
+  const [code] = useState(()=>Array.from({length:3},()=>colors[Math.floor(Math.random()*5)]));
+  const [guess,setGuess] = useState(["red","red","red"]);
+  const [attempts,setAttempts] = useState([]);
+  const [solved,setSolved] = useState(false);
+  const getClues = (g) => {
+    let right=0,near=0;const cCopy=[...code];const gCopy=[...g];
+    for(let i=0;i<3;i++)if(gCopy[i]===cCopy[i]){right++;cCopy[i]=null;gCopy[i]=null;}
+    for(let i=0;i<3;i++)if(gCopy[i]){const j=cCopy.indexOf(gCopy[i]);if(j!==-1){near++;cCopy[j]=null;}}
+    return{right,near};
+  };
+  const handleSubmit = () => {
+    if(solved)return; const clues=getClues(guess);
+    if(clues.right===3){setAttempts(a=>[...a,{guess:[...guess],clue:"✓"}]);setSolved(true);onSuccess();return;}
+    setAttempts(a=>[...a,{guess:[...guess],clue:clueEncode(clues.right,clues.near)}]);
+    if(attempts.length>=CRACK_FREE_GUESSES)onStrike(); // guesses 1–5 are free
+  };
+  const cycleColor = (idx) => {
+    if(solved)return; const ng=[...guess]; const ci=colors.indexOf(ng[idx]); ng[idx]=colors[(ci+1)%colors.length]; setGuess(ng);
+  };
+  const left=CRACK_FREE_GUESSES-attempts.length;
+  return (<div className="module-content"><h3>🔐 CRACK THE CODE</h3><p className="module-hint">Guess the 3-color code!</p>
+    <div style={{display:"flex",flexDirection:"column",gap:"0.4rem",marginBottom:"0.5rem"}}>
+      {attempts.map((a,i)=>(<div key={i} style={{display:"flex",alignItems:"center",gap:"0.5rem"}}>
+        <span style={{fontSize:"0.7rem",color:"#888",width:"1rem"}}>{i+1}</span>
+        <div style={{display:"flex",gap:"0.25rem"}}>{a.guess.map((c,j)=>(<span key={j} style={{width:"20px",height:"20px",borderRadius:"3px",background:colorHex[c]}}></span>))}</div>
+        <span style={{fontSize:"0.65rem",color:"#888"}}>CLUE</span><span style={{fontFamily:"'Orbitron',sans-serif",color:"#0ff",letterSpacing:"2px"}}>{a.clue}</span>
+      </div>))}
+    </div>
+    <div style={{display:"flex",gap:"0.3rem",justifyContent:"center",marginBottom:"0.5rem"}}>
+      {guess.map((c,i)=>(<button key={i} onClick={()=>cycleColor(i)} disabled={solved} style={{width:"50px",height:"50px",borderRadius:"6px",background:colorHex[c],border:"2px solid #555",cursor:"pointer",fontSize:"0.6rem",color:c==="yellow"||c==="white"?"#333":"#fff"}}>{c}</button>))}
+    </div>
+    <button onClick={handleSubmit} disabled={solved} className={`submit-btn ${solved?"correct":""}`}>{solved?"✓ CRACKED":left>0?`GUESS (${left} free)`:"GUESS (a wrong guess is a mistake!)"}</button></div>);
+};
+/* Paper version: clueDecode read as two tables (first digit × second digit, first digit × third digit). The check digit is skipped on paper. */
+const CrackTheCodePrint = () => {
+  const cell=(v)=>v<=3?v:"–";
+  return (<div>
+    <p>The Defuser guesses a secret code of <strong>3 colors</strong>. The colors are red, green, yellow, blue and white. A color can be used more than once.</p>
+    <p><strong>After each guess, ask:</strong> "What colors did you guess?" and "What is the clue number?" Write both on paper.</p>
+    <p><strong>Read the clue number</strong> (4 digits; the last digit is not used):</p>
+    <p>• <strong>Table 1:</strong> the row is the 1st digit, the column is the 2nd digit → how many colors are in the <strong>right place</strong>.</p>
+    <p>• <strong>Table 2:</strong> the row is the 1st digit, the column is the 3rd digit → how many are the <strong>right color, but in the wrong place</strong>.</p>
+    {[["Table 1: right place",(s,d)=>((d-3*s-2)%10+10)%10],["Table 2: right color, wrong place",(s,d)=>((d-7*s-5)%10+10)%10]].map(([title,f])=>(<table key={title} className="manual-table"><thead><tr><th colSpan={11}>{title}</th></tr><tr><th>1st ↓ / digit →</th>{[0,1,2,3,4,5,6,7,8,9].map(d=><th key={d}>{d}</th>)}</tr></thead><tbody>
+      {[1,2,3,4,5,6,7,8,9].map(s=>(<tr key={s}><td><strong>{s}</strong></td>{[0,1,2,3,4,5,6,7,8,9].map(d=><td key={d}>{cell(f(s,d))}</td>)}</tr>))}</tbody></table>))}
+    <p style={{color:"#888",fontStyle:"italic"}}>A "–" means you heard the number wrong. Ask again.</p>
+    <p><strong>Your job:</strong> use the clues to choose the next guess. The first {CRACK_FREE_GUESSES} guesses are free. After that, a wrong guess is a mistake.</p>
+    <p style={{color:"#888",fontStyle:"italic"}}>Tip: start with three different colors.</p>
+  </div>);
+};
+const CrackTheCodeManual = () => {
+  if(React.useContext(MANUAL.Print)) return <CrackTheCodePrint/>;
+  const [entry,setEntry] = useState(""); const [clues,setClues] = useState([]); const [bad,setBad] = useState(false);
+  const read = (e) => { e.preventDefault(); const c=clueDecode(entry); if(!c){setBad(true);return;} setBad(false);setClues([...clues,{code:entry,...c}]);setEntry(""); };
+  return (<div>
+    <p>The Defuser guesses a secret code of <strong>3 colors</strong>. The colors are red, green, yellow, blue and white. A color can be used more than once.</p>
+    <p><strong>After each guess, ask:</strong> "What colors did you guess?" and "What is the clue number?"</p>
+    <p><strong>Write the guess on paper.</strong> Then type the clue number here:</p>
+    <form onSubmit={read} style={{display:"flex",gap:"0.4rem",margin:"0.5rem 0"}}>
+      <input value={entry} onChange={e=>setEntry(e.target.value.replace(/[^0-9]/g,"").slice(0,4))} inputMode="numeric" placeholder="0000" className="manual-input"/>
+      <button type="submit" className="manual-key" disabled={entry.length!==4}>READ CLUE</button>
+      {clues.length>0&&<button type="button" className="manual-key" onClick={()=>{setClues([]);setBad(false);}}>NEW GAME</button>}
+    </form>
+    {bad&&<p style={{color:"#c0392b"}}>That is not a clue number. Ask again.</p>}
+    {clues.map((c,i)=>(<p key={i} className="manual-answer">Guess {i+1}: <strong>{c.right}</strong> in the right place. <strong>{c.near}</strong> right color, but in the wrong place.</p>))}
+    <p><strong>Your job:</strong> use the clues to choose the next guess. The first {CRACK_FREE_GUESSES} guesses are free. After that, a wrong guess is a mistake.</p>
+    <p style={{color:"#888",fontStyle:"italic"}}>Tip: start with three different colors.</p>
+  </div>);
+};
+
+/* WORD BUTTONS */
+const WordButtonsModule = ({ bomb=DEFAULT_BOMB, onSuccess, onStrike }) => {
+  const wordSets=[["HOT","COLD","BIG","FAST"],["HAPPY","SAD","ANGRY","CALM"],["LIGHT","HEAVY","SOFT","HARD"],["BEAUTIFUL","UGLY","TALL","SHORT"]];
+  const [words] = useState(()=>wordSets[Math.floor(Math.random()*wordSets.length)]);
+  // Animal sticker = the word with the MOST letters, food sticker = the FEWEST. Words that tie are all right.
+  const lens=words.map(w=>w.length), want=bomb.sticker.kind==="animal"?Math.max(...lens):Math.min(...lens);
+  const isRight=(w)=>w.length===want;
+  const [solved,setSolved] = useState(false);
+  return (<div className="module-content"><h3>📝 WORD BUTTONS</h3><p className="module-hint">Press the correct word</p>
+    <div className="options-grid">{words.map(w=>(<button key={w} onClick={()=>{if(solved)return;if(isRight(w)){setSolved(w);onSuccess();}else onStrike();}} disabled={!!solved} className={`option-btn ${solved===w?"correct":""}`}>{w}</button>))}</div></div>);
+};
+
+/* MEMORY */
+// Four stages. Each stage shows a number (1–4) and four word buttons in a new order. The manual's table says what to press;
+// from Stage 2 on, most answers point back ("same place as Stage 1", "same word as Stage 2"), so the Expert has to
+// write down the place and the word of every press. MEMORY_RULES[stage][number on screen - 1].
+const MEMORY_WORDS=["ONE","TWO","THREE","FOUR"];
+const MEMORY_RULES=[
+  [{place:2},{place:2},{place:3},{place:4}],
+  [{word:"FOUR"},{samePlace:1},{place:1},{samePlace:1}],
+  [{sameWord:2},{sameWord:1},{place:3},{word:"FOUR"}],
+  [{samePlace:1},{place:1},{samePlace:2},{sameWord:3}],
+];
+const memoryRuleText=(r)=>r.place?`${["","1st","2nd","3rd","4th"][r.place]} button`:r.word?`the word ${r.word}`:r.samePlace?`same place as Stage ${r.samePlace}`:`same word as Stage ${r.sameWord}`;
+const MemoryModule = ({ onSuccess, onStrike }) => {
+  const STAGES=MEMORY_RULES.length;
+  const deal=()=>({display:Math.floor(Math.random()*4)+1,order:[...MEMORY_WORDS].sort(()=>Math.random()-0.5)});
+  const [stage,setStage] = useState(0);
+  const [history,setHistory] = useState([]); // per finished stage: {place (0-3), word}
+  const [round,setRound] = useState(deal);
+  const [solved,setSolved] = useState(false);
+  const rule=MEMORY_RULES[stage][round.display-1];
+  const correctIdx = rule.place?rule.place-1:rule.word?round.order.indexOf(rule.word):rule.samePlace?history[rule.samePlace-1].place:round.order.indexOf(history[rule.sameWord-1].word);
+  const handlePress = (idx) => {
+    if(solved)return;
+    if(idx!==correctIdx){onStrike();return;}
+    setHistory([...history,{place:idx,word:round.order[idx]}]);
+    if(stage>=STAGES-1){setSolved(true);onSuccess();}
+    else{setStage(stage+1);setRound(deal());}
+  };
+  return (<div className="module-content"><h3>🧠 MEMORY</h3><p className="module-hint">Stage {Math.min(stage+1,STAGES)} of {STAGES}</p>
+    <div style={{textAlign:"center",marginBottom:"0.5rem"}}><span style={{fontFamily:"'Orbitron',sans-serif",fontSize:"2rem",color:"#0ff"}}>{round.display}</span></div>
+    <div style={{display:"flex",gap:"0.4rem"}}>{round.order.map((label,i)=>(<button key={label} onClick={()=>handlePress(i)} disabled={solved} className="option-btn" style={{flex:1,fontSize:"0.7rem",padding:"0.6rem 0.3rem"}}>{label}</button>))}</div>
+    <div style={{display:"flex",justifyContent:"center",gap:"0.25rem",marginTop:"0.5rem"}}>{MEMORY_RULES.map((_,i)=>(<span key={i} style={{width:"10px",height:"10px",borderRadius:"50%",background:i<stage||solved?"#4caf50":i===stage?"#ffcc00":"#333"}}></span>))}</div></div>);
+};
+
+/* SYMBOL PANEL */
+// One plant, one animal, one food and one other thing. No picture fits two groups: the animals are ones nobody eats
+// (no fish, chicken or pig), and the foods are cooked dishes, not fruit (fruit grows on plants).
+const PANEL_POOLS={plant:["tree","cactus","flower"],animal:["cat","fox","dog","bird","rabbit","monkey","tiger","frog"],food:["pizza","hamburger","cake","bread","sandwich","rice"],other:["fire","gem","star"]};
+const panelSrc=(kind,name)=>kind==="animal"&&name!=="fox"?PX.animal(name):PX.symbol(name);
+const SymbolPanelModule = ({ serialNumber, onSuccess, onStrike }) => {
+  const [shuffled] = useState(()=>Object.entries(PANEL_POOLS).map(([kind,names])=>({kind,name:names[Math.floor(Math.random()*names.length)]})).sort(()=>Math.random()-0.5));
+  const fd = getFirstDigit(serialNumber);
+  const correct = fd<=3?"plant":fd<=6?"animal":"food";
+  const [solved,setSolved] = useState(false);
+  return (<div className="module-content"><h3>🎨 SYMBOL PANEL</h3><p className="module-hint">Press the correct symbol</p>
+    <div className="options-grid">{shuffled.map(s=>(<button key={s.name} onClick={()=>{if(solved)return;if(s.kind===correct){setSolved(true);onSuccess();}else onStrike();}} disabled={solved} className={`symbol-btn ${solved&&s.kind===correct?"correct":""}`}><img className="pixel-art" alt={s.name} src={panelSrc(s.kind,s.name)} width={48} height={48}/></button>))}</div></div>);
+};
+
+/* COLOR SWITCHBOARD */
+const ColorSwitchboardModule = ({ serialNumber, onSuccess, onStrike }) => {
+  const directions=["UP","DOWN","LEFT","RIGHT"]; const dirArrows={UP:"↑",DOWN:"↓",LEFT:"←",RIGHT:"→"};
+  const switchColors=["red","blue","yellow","green"]; const colorHex={red:"#e74c3c",blue:"#3498db",yellow:"#f1c40f",green:"#2ecc71"};
+  const lookup={red:{UP:"RIGHT",DOWN:"LEFT",LEFT:"UP",RIGHT:"DOWN"},blue:{UP:"DOWN",DOWN:"RIGHT",LEFT:"LEFT",RIGHT:"UP"},yellow:{UP:"LEFT",DOWN:"RIGHT",LEFT:"DOWN",RIGHT:"UP"},green:{UP:"UP",DOWN:"DOWN",LEFT:"LEFT",RIGHT:"RIGHT"}};
+  const [switches,setSwitches] = useState(()=>Array.from({length:4},()=>{const c=switchColors[Math.floor(Math.random()*4)];const d=directions[Math.floor(Math.random()*4)];return{color:c,current:d,target:lookup[c][d]};}));
+  // A switch gives no sign of being right (it used to lock, so tapping until it locked solved the module alone). SUBMIT checks all four.
+  const [solved,setSolved] = useState(false);
+  const cycle = (idx) => { if(solved)return; setSwitches(sw=>sw.map((x,i)=>i===idx?{...x,current:directions[(directions.indexOf(x.current)+1)%4]}:x)); };
+  const submit = () => { if(solved)return; if(switches.every(x=>x.current===x.target)){setSolved(true);onSuccess();}else onStrike(); };
+  return (<div className="module-content"><h3>🎛️ SWITCHBOARD</h3><p className="module-hint">Set each switch correctly</p>
+    <div className="switch-grid">{switches.map((sw,i)=>(<button key={i} onClick={()=>cycle(i)} disabled={solved} className={`switch-btn ${solved?"solved":""}`} style={{background:colorHex[sw.color]}}>
+      <span className="switch-arrow" style={{color:sw.color==="yellow"?"#333":"#fff"}}>{dirArrows[sw.current]}</span>
+      <span className="switch-dir-label" style={{color:sw.color==="yellow"?"#555":"#fffa"}}>{sw.current}</span></button>))}</div>
+    <button onClick={submit} disabled={solved} className={`submit-btn ${solved?"correct":""}`} style={{marginTop:"0.75rem"}}>{solved?"✓ CORRECT":"SUBMIT"}</button></div>);
+};
+
+/* WORLD CLOCK */
+const WorldClockModule = ({ serialNumber, onSuccess, onStrike }) => {
+  const cities=[{name:"London",offset:0},{name:"Paris",offset:1},{name:"New York",offset:-5},{name:"Tokyo",offset:9},{name:"Sydney",offset:11},{name:"Dubai",offset:4},{name:"Los Angeles",offset:-8}];
+  const [homeTime] = useState(()=>({h:Math.floor(Math.random()*12)+1,m:[0,15,30,45][Math.floor(Math.random()*4)]}));
+  const [targetCities] = useState(()=>[...cities].sort(()=>Math.random()-0.5).slice(0,3));
+  const [answers,setAnswers] = useState([{h:12,m:0},{h:12,m:0},{h:12,m:0}]);
+  const [solved,setSolved] = useState(false);
+  const taipeiOffset = 8;
+  const getTargetTime = (cityOffset) => {
+    let h = homeTime.h + (cityOffset - taipeiOffset); let m = homeTime.m;
+    while(h>12)h-=12; while(h<1)h+=12; return{h,m};
+  };
+  const adjustH = (idx,dir) => { if(solved)return; const na=[...answers];na[idx]={...na[idx],h:((na[idx].h-1+dir+12)%12)+1};setAnswers(na); };
+  const adjustM = (idx,dir) => { if(solved)return; const na=[...answers];na[idx]={...na[idx],m:(na[idx].m+dir*15+60)%60};setAnswers(na); };
+  const handleSubmit = () => {
+    if(solved)return;
+    const allCorrect = targetCities.every((c,i)=>{const t=getTargetTime(c.offset);return answers[i].h===t.h&&answers[i].m===t.m;});
+    if(allCorrect){setSolved(true);onSuccess();}else onStrike();
+  };
+  return (<div className="module-content"><h3>🌍 WORLD CLOCK</h3>
+    <div style={{textAlign:"center",marginBottom:"0.5rem"}}><span style={{color:"#888",fontSize:"0.7rem"}}>Taipei:</span> <span style={{color:"#0f0",fontFamily:"'Orbitron',sans-serif"}}>{homeTime.h}:{String(homeTime.m).padStart(2,"0")}</span></div>
+    <div style={{display:"flex",flexDirection:"column",gap:"0.5rem"}}>
+      {targetCities.map((city,i)=>(<div key={city.name} style={{background:"#0a1520",borderRadius:"6px",padding:"0.5rem",display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+        <span style={{color:"#f1c40f",fontSize:"0.7rem",width:"70px"}}>{city.name}</span>
+        <div style={{display:"flex",alignItems:"center",gap:"0.25rem"}}>
+          <button onClick={()=>adjustH(i,-1)} className="clock-btn" style={{padding:"0.2rem 0.4rem",fontSize:"0.7rem"}}>◀</button>
+          <span style={{color:"#0ff",fontFamily:"'Orbitron',sans-serif",fontSize:"0.9rem",minWidth:"3.5rem",textAlign:"center"}}>{answers[i].h}:{String(answers[i].m).padStart(2,"0")}</span>
+          <button onClick={()=>adjustH(i,1)} className="clock-btn" style={{padding:"0.2rem 0.4rem",fontSize:"0.7rem"}}>▶</button>
+          <button onClick={()=>adjustM(i,1)} className="clock-btn" style={{padding:"0.2rem 0.4rem",fontSize:"0.7rem"}}>+15</button>
+        </div>
+      </div>))}
+    </div>
+    <button onClick={handleSubmit} disabled={solved} className={`submit-btn ${solved?"correct":""}`} style={{marginTop:"0.5rem"}}>{solved?"✓ CORRECT":"SUBMIT"}</button></div>);
+};
+
+/* COMBINATION LOCK */
+const CombinationLockModule = ({ serialNumber, onSuccess, onStrike }) => {
+  const letterValues={A:5,B:12,C:25,D:33,E:8,F:18,G:15,H:22,I:30,J:7,K:19,L:35,M:10,N:27,O:3,P:14,Q:38,R:20,S:9,T:31,U:16,V:24,W:2,X:36,Y:11,Z:28};
+  const fl = getFirstLetter(serialNumber);
+  const digits = getAllDigits(serialNumber);
+  const d1=parseInt(digits[0])||0; const d2=parseInt(digits[1])||0; const d3=parseInt(digits[2])||0;
+  const n1 = (letterValues[fl]||5)%40;
+  const n2 = (n1+d1+d2)%40;
+  const n3 = (d2*3+d3)%40;
+  const combo = [n1,n2,n3];
+  const [dialPos,setDialPos] = useState(0);
+  const [stage,setStage] = useState(0); // 0=right to n1, 1=left to n2, 2=right to n3
+  const [solved,setSolved] = useState(false);
+  const turnDial = (dir) => {// dir: 1=clockwise(right), -1=counter-clockwise(left)
+    if(solved)return; setDialPos(p=>(p+dir+40)%40);
+  };
+  const tryUnlock = () => {
+    if(solved)return;
+    if(dialPos===combo[stage]){
+      if(stage>=2){setSolved(true);onSuccess();}
+      else setStage(s=>s+1);
+    } else onStrike(); // a wrong try used to be free, so the dial could be tried number by number
+  };
+  return (<div className="module-content"><h3>🔒 COMBINATION LOCK</h3><p className="module-hint">Stage {stage+1}/3 — Turn {stage%2===0?"RIGHT":"LEFT"}</p>
+    <div style={{textAlign:"center",margin:"0.5rem 0"}}>
+      <div style={{fontFamily:"'Orbitron',sans-serif",fontSize:"2.5rem",color:"#0ff"}}>{dialPos}</div>
+      <div style={{display:"flex",justifyContent:"center",gap:"0.5rem",marginTop:"0.5rem"}}>
+        <button onClick={()=>turnDial(-1)} className="clock-btn" style={{padding:"0.5rem 1rem"}}>◀ LEFT</button>
+        <button onClick={()=>turnDial(1)} className="clock-btn" style={{padding:"0.5rem 1rem"}}>RIGHT ▶</button>
+      </div>
+      <div style={{display:"flex",justifyContent:"center",gap:"0.25rem",margin:"0.5rem 0"}}>{[0,1,2].map(i=>(<span key={i} style={{width:"12px",height:"12px",borderRadius:"50%",background:i<stage?"#4caf50":i===stage?"#ffcc00":"#333"}}></span>))}</div>
+    </div>
+    <button onClick={tryUnlock} disabled={solved} className={`submit-btn ${solved?"correct":""}`}>{solved?"✓ UNLOCKED":"TRY UNLOCK"}</button></div>);
+};
+
+/* ===== SOUND (Web Audio, no files). window.SFX is also free for modules to use. ===== */
+const SFX = window.SFX = (() => {
+  let ctx = null, muted = false;
+  try { muted = localStorage.getItem("eslbomb-mute") === "1"; } catch (e) {}
+  const ac = () => { try { if (!ctx) { const C = window.AudioContext || window.webkitAudioContext; if (!C) return null; ctx = new C(); } if (ctx.state === "suspended") ctx.resume(); return ctx; } catch (e) { return null; } };
+  const tone = (f, at, dur, type = "square", vol = 0.07, f2) => { const a = ac(); if (!a || muted) return; try {
+    const o = a.createOscillator(), g = a.createGain(), t = a.currentTime + at; o.type = type; o.frequency.setValueAtTime(f, t);
+    if (f2) o.frequency.exponentialRampToValueAtTime(f2, t + dur);
+    g.gain.setValueAtTime(vol, t); g.gain.exponentialRampToValueAtTime(0.0001, t + dur); o.connect(g); g.connect(a.destination); o.start(t); o.stop(t + dur + 0.03); } catch (e) {} };
+  const noise = (at, dur, vol, cut) => { const a = ac(); if (!a || muted) return; try {
+    const n = Math.floor(a.sampleRate * dur), buf = a.createBuffer(1, n, a.sampleRate), d = buf.getChannelData(0); for (let i = 0; i < n; i++) d[i] = Math.random() * 2 - 1;
+    const src = a.createBufferSource(), fl = a.createBiquadFilter(), g = a.createGain(), t = a.currentTime + at; src.buffer = buf; fl.type = "lowpass";
+    fl.frequency.setValueAtTime(cut, t); fl.frequency.exponentialRampToValueAtTime(60, t + dur); g.gain.setValueAtTime(vol, t); g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    src.connect(fl); fl.connect(g); g.connect(a.destination); src.start(t); } catch (e) {} };
+  return {
+    unlock: ac,
+    isMuted: () => muted,
+    setMuted: (m) => { muted = m; try { localStorage.setItem("eslbomb-mute", m ? "1" : "0"); } catch (e) {} },
+    /* one clock tick. gap = seconds until the next tick, so the extra ticks fit however fast the clock runs */
+    tick: (timeLeft, gap = 1) => { const f = timeLeft <= 10 ? 1500 : timeLeft <= 30 ? 1250 : 1000, n = timeLeft <= 10 ? 4 : timeLeft <= 30 ? 2 : 1, v = timeLeft <= 60 ? 0.06 : 0.03;
+      for (let i = 0; i < n; i++) tone(f, i * gap / n, 0.045, "square", v); },
+    count: () => tone(520, 0, 0.14, "square", 0.07),
+    go: () => tone(1040, 0, 0.4, "square", 0.07),
+    strike: () => { tone(160, 0, 0.45, "sawtooth", 0.14, 70); tone(113, 0, 0.45, "square", 0.08, 50); },
+    defuse: () => { tone(660, 0, 0.12, "triangle", 0.12); tone(880, 0.11, 0.12, "triangle", 0.12); tone(1320, 0.22, 0.3, "triangle", 0.12); },
+    win: () => { [523, 659, 784, 1047, 784, 1047].forEach((f, i) => tone(f, i * 0.13, i === 5 ? 0.7 : 0.14, "triangle", 0.13)); },
+    unlockFinale: () => { tone(330, 0, 0.1, "square", 0.08); tone(440, 0.1, 0.1, "square", 0.08); tone(330, 0.2, 0.1, "square", 0.08); tone(660, 0.3, 0.35, "square", 0.08); },
+    stars: (n) => { for (let i = 0; i < n; i++) tone(880 + i * 220, 0.6 + i * 0.45, 0.25, "triangle", 0.12); },
+    alarm: () => { tone(1900, 0, 0.09, "square", 0.09); tone(1900, 0.14, 0.09, "square", 0.09); },
+    needy: () => { tone(700, 0, 0.1, "sawtooth", 0.09); tone(700, 0.15, 0.1, "sawtooth", 0.09); tone(700, 0.3, 0.1, "sawtooth", 0.09); },
+    lights: () => { tone(90, 0, 0.5, "sawtooth", 0.1, 40); },
+    ok: () => tone(990, 0, 0.12, "triangle", 0.1),
+    boom: () => { noise(0, 1.8, 0.6, 2500); tone(110, 0, 1.2, "sine", 0.35, 28); },
+  };
+})();
+
+/* ===== MODULE WRAPPER ===== */
+const ModuleWrapper = ({ module, serialNumber, bomb, onComplete, onStrike, locked, finale }) => {
+  const [status,setStatus] = useState("active");
+  const handleSuccess = () => {setStatus("success");setTimeout(()=>onComplete(module.id),600);};
+  const components = {colorWires:ColorWiresModule,userName:UserNameModule,monsterLab:MonsterLabModule,guessWho:GuessWhoModule,vendingMachine:VendingMachineModule,symbolKeypad:SymbolKeypadModule,numberKeypad:NumberKeypadModule,bigButton:BigButtonModule,sliders:SlidersModule,crackTheCode:CrackTheCodeModule,wordButtons:WordButtonsModule,memory:MemoryModule,symbolPanel:SymbolPanelModule,colorSwitchboard:ColorSwitchboardModule,worldClock:WorldClockModule,combinationLock:CombinationLockModule,...Object.fromEntries((window.EXTRA_MODULES||[]).map(m=>[m.type,m.Component]))};
+  const Comp = components[module.type];
+  /* the finale is not built until it unlocks, so nothing in it can be read or started early */
+  if(locked) return (<div className="module-wrapper locked-module"><div className="lock-face"><div className="lock-icon">🔒</div><div className="lock-title">LAST MODULE</div><div className="lock-sub">Finish the others first!</div></div></div>);
+  return (<div className={`module-wrapper ${status} ${finale?"finale":""}`}>
+    {finale&&status==="active"&&<div className="finale-tag">⚠️ LAST MODULE</div>}
+    {TEST_MODE&&status==="active"&&<div className="test-tools"><button onClick={handleSuccess}>TEST: SOLVE</button><button onClick={onStrike}>TEST: STRIKE</button></div>}
+    <div className="module-status-indicator">{status==="success"&&<span className="status-icon">✓</span>}{status==="active"&&<span className="status-dot"></span>}</div>
+    {Comp?(<Comp serialNumber={serialNumber} bomb={bomb} onSuccess={handleSuccess} onStrike={onStrike}/>):null}
+    {status==="success"&&(<div className="module-complete"><span className="complete-badge"><span className="complete-icon">✅</span><span>MODULE DEFUSED</span></span></div>)}</div>);
+};
+
+/* ===== EXPERT MANUAL ===== */
+/* manual section id -> module id, for the 16 built-in modules (M01–M12 sections already use the module id) */
+const SECTION_MODULE = {wires:"colorWires",user:"userName",monster:"monsterLab",guess:"guessWho",vending:"vendingMachine",symbol:"symbolKeypad",keypad:"numberKeypad",bigbtn:"bigButton",sliders:"sliders",crack:"crackTheCode",word:"wordButtons",mem:"memory",sympanel:"symbolPanel",switch:"colorSwitchboard",world:"worldClock",combo:"combinationLock"};
+/* `only` = list of module ids; when given, the manual shows just those sections */
+/* `print` = the paper version: every section open, every page/tab shown, codebooks instead of type-in boxes. */
+const ExpertManual = ({only,print}) => {
+  const [openSection,setOpenSection] = useState(null);
+  const toggle = (id) => setOpenSection(o=>o===id?null:id);
+  const S = ({id,title,children}) => (!DEMO_MODULES.includes(SECTION_MODULE[id]||id)||(only&&!only.includes(SECTION_MODULE[id]||id))) ? null
+    : print ? (<div className="manual-section"><h2>{title}</h2><div>{children}</div></div>)
+    : (<div className="manual-section"><h2 onClick={()=>toggle(id)} style={{cursor:"pointer"}}>{title} {openSection===id?"▼":"▶"}</h2>{openSection===id&&<div>{children}</div>}</div>);
+  return (<MANUAL.Print.Provider value={!!print}><div className="manual-page-content">
+    {!print&&<><h1 className="manual-title">📖 BOMB DEFUSAL MANUAL</h1><p className="manual-subtitle">CLASSIFIED — For Experts Only · Tap a section to expand</p></>}
+    <div className="manual-section"><h2>💣 The Bomb</h2><div>
+      <p>Some rules ask about the bomb. You cannot see it. Ask the Defuser:</p>
+      <p>• "What <strong>color</strong> is the bomb?" (red, blue, green, yellow or purple)</p>
+      <p>• "How many <strong>batteries</strong> are on the bomb?" (one, two, three or four)</p>
+      <p>• "What is on the <strong>sticker</strong>?" (an animal or a food)</p>
+      <p>• "What is the <strong>serial number</strong>?"</p></div></div>
+
+    <S id="wires" title="🔌 Color Wires">
+      <p><strong>Ask:</strong> "How many wires do you see?" and "What color is each wire, from top to bottom?"</p>
+      <p><strong>3 wires:</strong></p>
+      <p>1. If there are no red wires → cut the <strong>2nd</strong> wire.</p>
+      <p>2. If the last wire is white → cut the <strong>last</strong> wire.</p>
+      <p>3. If there is more than one blue wire → cut the <strong>last blue</strong> wire.</p>
+      <p>4. Otherwise → cut the <strong>last</strong> wire.</p>
+      <p><strong>4 wires:</strong></p>
+      <p>1. If there is more than one red wire AND the last digit of the serial number is odd → cut the <strong>last red</strong> wire.</p>
+      <p>2. If the last wire is yellow AND there are no red wires → cut the <strong>1st</strong> wire.</p>
+      <p>3. If there is exactly one blue wire → cut the <strong>1st</strong> wire.</p>
+      <p>4. If there is more than one yellow wire → cut the <strong>last</strong> wire.</p>
+      <p>5. Otherwise → cut the <strong>2nd</strong> wire.</p>
+      <p><strong>5 wires:</strong></p>
+      <p>1. If the last wire is black AND the last serial digit is odd → cut the <strong>4th</strong> wire.</p>
+      <p>2. If there is exactly one red wire AND more than one yellow → cut the <strong>1st</strong> wire.</p>
+      <p>3. If there are no black wires → cut the <strong>2nd</strong> wire.</p>
+      <p>4. Otherwise → cut the <strong>1st</strong> wire.</p>
+      <p style={{color:"#888",fontStyle:"italic",marginTop:"0.5rem"}}>Follow the rules in order. Stop at the first rule that applies.</p>
+    </S>
+
+    <S id="user" title="👤 User Name">
+      <p><strong>Ask:</strong> "What is the serial number?"</p>
+      <p><strong>Step 1:</strong> Find the <strong>last LETTER</strong> in the serial number.</p>
+      <p><strong>Step 2:</strong> Look up the name that starts with that letter in the table below.</p>
+      <p><strong>Step 3:</strong> Spell the name for the Defuser, one letter at a time: "K… A… T… E." The Defuser types it and presses SUBMIT.</p>
+      <table className="manual-table"><thead><tr><th>Letter</th><th>Name</th><th>Letter</th><th>Name</th><th>Letter</th><th>Name</th></tr></thead><tbody>
+        <tr><td>A</td><td>Alice</td><td>J</td><td>Jack</td><td>S</td><td>Sam</td></tr>
+        <tr><td>B</td><td>Bob</td><td>K</td><td>Kate</td><td>T</td><td>Tom</td></tr>
+        <tr><td>C</td><td>Charlie</td><td>L</td><td>Leo</td><td>U</td><td>Uma</td></tr>
+        <tr><td>D</td><td>David</td><td>M</td><td>Mary</td><td>V</td><td>Vera</td></tr>
+        <tr><td>E</td><td>Eve</td><td>N</td><td>Noah</td><td>W</td><td>Will</td></tr>
+        <tr><td>F</td><td>Frank</td><td>O</td><td>Olive</td><td>X</td><td>Xena</td></tr>
+        <tr><td>G</td><td>Grace</td><td>P</td><td>Peter</td><td>Y</td><td>Yuki</td></tr>
+        <tr><td>H</td><td>Henry</td><td>Q</td><td>Quinn</td><td>Z</td><td>Zara</td></tr>
+        <tr><td>I</td><td>Iris</td><td>R</td><td>Rose</td><td></td><td></td></tr>
+      </tbody></table>
+    </S>
+
+    <S id="monster" title="👾 Monster Lab">
+      <p><strong>Ask:</strong> "How many eyes does the monster have?" "What kind of arms?" (tentacles, robot, or furry) "What color is its skin?" (purple, green, or orange)</p>
+      <p><strong>Step 1:</strong> Find the <strong>last NUMBER</strong> in the serial number.</p>
+      <p><strong>Step 2:</strong> Use the matching rule set below:</p>
+      <table className="manual-table"><thead><tr><th>Last Digit</th><th>Use This Feature</th><th>Lookup</th></tr></thead><tbody>
+        <tr><td>0, 1, 2</td><td>EYES</td><td>1 eye=MEEP, 2=BLIP, 3=ZORG, 4=FLOP</td></tr>
+        <tr><td>3, 4, 5</td><td>SKIN COLOR</td><td>purple=ZORG, green=BLIP, orange=FLOP</td></tr>
+        <tr><td>6, 7</td><td>ARMS</td><td>tentacles=BLIP, robot=MEEP, furry=FLOP</td></tr>
+        <tr><td>8, 9</td><td>EYES (second list)</td><td>1 eye=BLIP, 2=FLOP, 3=MEEP, 4=ZORG</td></tr>
+      </tbody></table>
+      <p><strong>Step 3:</strong> Tell the Defuser: "Press [monster name]."</p>
+    </S>
+
+    <S id="guess" title="🕵️ Guess Who">
+      <p><strong>Ask:</strong> "Is it a boy or a girl?" "What color are the eyes?" (Brown, Blue, or Green) and "What color is the hair?" (Black, Brown, Blonde, Red, or Gray)</p>
+      <p><strong>Step:</strong> Find the name in the right table and tell the Defuser to press it.</p>
+      {[["boy","BOY"],["girl","GIRL"]].map(([g,label])=>(<React.Fragment key={g}><p><strong>{label}</strong></p>
+      <table className="manual-table"><thead><tr><th>Eyes ↓ Hair →</th>{GUESS_HAIR.map(h=><th key={h}>{h}</th>)}</tr></thead><tbody>
+        {GUESS_EYES.map((e,ei)=>(<tr key={e}><td><strong>{e}</strong></td>{GUESS_NAMES[g][ei].map(n=><td key={n}>{n}</td>)}</tr>))}
+      </tbody></table></React.Fragment>))}
+    </S>
+
+    <S id="vending" title="🏭 Vending Machine">
+      <p><strong>Ask:</strong> "What items do you see?" and "How much does each one cost?" and "What color is the bomb?"</p>
+      <p><strong>Step 1:</strong> Find the bomb's color in the table:</p>
+      <table className="manual-table"><thead><tr><th>The bomb is…</th><th>Buy This Item</th></tr></thead><tbody>
+        <tr><td className="color-cell red">Red</td><td>The <strong>cheapest</strong> item</td></tr>
+        <tr><td className="color-cell blue">Blue</td><td>The <strong>most expensive</strong> item</td></tr>
+        <tr><td className="color-cell green">Green</td><td>An item that costs <strong>more than $1.00 but less than $2.00</strong></td></tr>
+        <tr><td className="color-cell yellow">Yellow</td><td>A <strong>food</strong> item (not a drink)</td></tr>
+        <tr><td style={{background:"#a65bd6",color:"#fff"}}>Purple</td><td>An item with a price <strong>ending in .50</strong></td></tr>
+      </tbody></table>
+      <p><strong>Step 2:</strong> Tell the Defuser: "Buy the [item name]."</p>
+      <p style={{color:"#888",fontStyle:"italic"}}>If two items fit the rule, either one is OK. If no item fits the rule, buy the cheapest item.</p>
+    </S>
+
+    <S id="symbol" title="🔣 Symbol Keypad">
+      <p><strong>Ask:</strong> "What four pictures do you see?" The Defuser says the color and the thing: "a red star".</p>
+      <p><strong>Step 1:</strong> Find the list below that has <strong>ALL four</strong> pictures.</p>
+      <p><strong>Step 2:</strong> Tell the Defuser to press them in the <strong>order of that list</strong>, from top to bottom.</p>
+      <table className="manual-table"><thead><tr>{SYMBOL_COLUMNS.map((_,c)=><th key={c}>List {c+1}</th>)}</tr></thead><tbody>
+        {SYMBOL_COLUMNS[0].map((_,r)=>(<tr key={r}>{SYMBOL_COLUMNS.map((col,c)=>(<td key={c}>{col[r]}</td>))}</tr>))}
+      </tbody></table>
+      <p style={{color:"#888",fontStyle:"italic"}}>Example: red star, yellow sun, blue star and red sun are all in List 1. Press them in that order.</p>
+    </S>
+
+    <S id="keypad" title="🔢 Number Keypad">
+      <NumberKeypadManual/>
+    </S>
+
+    <S id="bigbtn" title="🔴 Big Button">
+      <p><strong>Ask:</strong> "What color is the button?" and "What word is on the button?" and "How many batteries are on the bomb?"</p>
+      <p><strong>Use these rules in order (stop at the first match):</strong></p>
+      <p>1. If the button is <strong>blue</strong> AND says <strong>HOLD</strong> → tell them to <strong>HOLD for 2+ seconds</strong>.</p>
+      <p>2. If the button is <strong>red</strong> AND says <strong>PRESS</strong> → tell them to do a <strong>quick press</strong>.</p>
+      <p>3. If the button is <strong>white</strong> → tell them to <strong>HOLD for 2+ seconds</strong>.</p>
+      <p>4. If the bomb has <strong>three or four batteries</strong> → tell them to <strong>HOLD for 2+ seconds</strong>.</p>
+      <p>5. Otherwise → tell them to do a <strong>quick press</strong> (tap and release fast!).</p>
+      <p style={{color:"#888",fontStyle:"italic"}}>Quick press = less than half a second. Hold = press and keep holding for 2 seconds, then release.</p>
+    </S>
+
+    <S id="sliders" title="🎚️ Sliders">
+      <p><strong>Ask:</strong> "What color is the light?" and "What number does each slider start on?"</p>
+      <p><strong>Step 1:</strong> Write the three start numbers on paper.</p>
+      <p><strong>Step 2:</strong> Find the light's color in the table. Change each number.</p>
+      <table className="manual-table"><thead><tr><th>Light</th><th>Red slider</th><th>Blue slider</th><th>Yellow slider</th></tr></thead><tbody>
+        {Object.keys(SLIDER_MOVES).map(l=>(<tr key={l}><td><strong>{l}</strong></td>{SLIDER_MOVES[l].map((d,i)=><td key={i}>{moveWords(d)}</td>)}</tr>))}
+      </tbody></table>
+      <p><strong>Step 3:</strong> Tell the Defuser the three new numbers. Then they press SUBMIT.</p>
+      <p style={{color:"#888",fontStyle:"italic"}}>Example: the light is green and red starts on 4. "Two more" than 4 is 6. Set the red slider to 6.</p>
+    </S>
+
+    <S id="crack" title="🔐 Crack the Code">
+      <CrackTheCodeManual/>
+    </S>
+
+    <S id="word" title="📝 Word Buttons">
+      <p><strong>Ask:</strong> "What words do you see on the buttons?" and "What is on the bomb's sticker?"</p>
+      <p><strong>Step 1:</strong> Is the sticker an animal or a food?</p>
+      <p>• If the sticker is an <strong>animal</strong> (cat, dog, bird, rabbit, monkey, tiger) → press the word with the <strong>MOST</strong> letters.</p>
+      <p>• If the sticker is a <strong>food</strong> (apple, banana, cake, egg, pizza, bread) → press the word with the <strong>FEWEST</strong> letters.</p>
+      <p><strong>Step 2:</strong> Count the letters in each word and tell the Defuser which one to press.</p>
+      <p style={{color:"#888",fontStyle:"italic"}}>If two words have the same number of letters, either one is OK.</p>
+    </S>
+
+    <S id="mem" title="🧠 Memory">
+      <p>There are <strong>{MEMORY_RULES.length} stages</strong>. Each stage shows a number and four word buttons. The words move every stage.</p>
+      <p><strong>Every stage, ask:</strong> "What number is on the screen?" and "What are the words, from left to right?"</p>
+      <p><strong>Find what to press:</strong></p>
+      <table className="manual-table"><thead><tr><th>Number on screen →</th><th>1</th><th>2</th><th>3</th><th>4</th></tr></thead><tbody>
+        {MEMORY_RULES.map((row,i)=>(<tr key={i}><td><strong>Stage {i+1}</strong></td>{row.map((r,j)=><td key={j}>{memoryRuleText(r)}</td>)}</tr>))}
+      </tbody></table>
+      <p><strong>Write down every press on paper:</strong> the stage, the place (1st, 2nd, 3rd or 4th from the left) and the word. You will need them later.</p>
+      <p style={{color:"#888",fontStyle:"italic"}}>"Same place as Stage 1" = press the button in the place you pressed in Stage 1. "Same word as Stage 2" = press the word you pressed in Stage 2, where it is now.</p>
+    </S>
+
+    <S id="sympanel" title="🎨 Symbol Panel">
+      <p><strong>Ask:</strong> "What four pictures do you see?" and "What is the serial number?"</p>
+      <p><strong>Step 1:</strong> Find the <strong>first NUMBER</strong> in the serial number.</p>
+      <p><strong>Step 2:</strong></p>
+      <p>• If the number is <strong>0, 1, 2, or 3</strong> → press the <strong>PLANT</strong> (a tree, a cactus or a flower).</p>
+      <p>• If the number is <strong>4, 5, or 6</strong> → press the <strong>ANIMAL</strong> (a cat, a dog, a bird…).</p>
+      <p>• If the number is <strong>7, 8, or 9</strong> → press the <strong>FOOD</strong> (pizza, cake, bread…).</p>
+      <p style={{color:"#888",fontStyle:"italic"}}>There is always one plant, one animal, one food and one other thing.</p>
+    </S>
+
+    <S id="switch" title="🎛️ Switchboard">
+      <p><strong>Ask:</strong> "What color is each switch?" and "What direction is it pointing?" (up, down, left, or right)</p>
+      <p><strong>Step:</strong> For each switch, find its color and current direction in the table. Tell the Defuser the <strong>target direction</strong>. They tap the switch to cycle through directions.</p>
+      <table className="manual-table"><thead><tr><th>Color</th><th>If pointing UP, set to:</th><th>DOWN →</th><th>LEFT →</th><th>RIGHT →</th></tr></thead><tbody>
+        <tr><td className="color-cell red">Red</td><td>RIGHT</td><td>LEFT</td><td>UP</td><td>DOWN</td></tr>
+        <tr><td className="color-cell blue">Blue</td><td>DOWN</td><td>RIGHT</td><td>LEFT</td><td>UP</td></tr>
+        <tr><td className="color-cell yellow">Yellow</td><td>LEFT</td><td>RIGHT</td><td>DOWN</td><td>UP</td></tr>
+        <tr><td className="color-cell green">Green</td><td>UP</td><td>DOWN</td><td>LEFT</td><td>RIGHT</td></tr>
+      </tbody></table>
+      <p style={{color:"#888",fontStyle:"italic"}}>Set all four switches, then tell the Defuser to press SUBMIT. The bomb does not show which switches are right, and a wrong SUBMIT is a mistake.</p>
+    </S>
+
+    <S id="world" title="🌍 World Clock">
+      <p><strong>Ask:</strong> "What time does the Taipei clock show?" and "What cities do you see?"</p>
+      <p><strong>Step 1:</strong> Note the Taipei time (the home clock).</p>
+      <p><strong>Step 2:</strong> For each city, calculate the time using the offsets below. Add or subtract hours from Taipei time.</p>
+      <table className="manual-table"><thead><tr><th>City</th><th>Offset from Taipei</th></tr></thead><tbody>
+        <tr><td>London</td><td>−8 hours</td></tr>
+        <tr><td>Paris</td><td>−7 hours</td></tr>
+        <tr><td>New York</td><td>−13 hours</td></tr>
+        <tr><td>Tokyo</td><td>+1 hour</td></tr>
+        <tr><td>Sydney</td><td>+3 hours</td></tr>
+        <tr><td>Dubai</td><td>−4 hours</td></tr>
+        <tr><td>Los Angeles</td><td>−16 hours</td></tr>
+      </tbody></table>
+      <p><strong>Step 3:</strong> Tell the Defuser: "Set [city] to [time]." They use ◀▶ for hours and +15 for minutes.</p>
+      <p style={{color:"#888",fontStyle:"italic"}}>If the result is negative or over 12, wrap around (e.g., -2 becomes 10, 14 becomes 2).</p>
+    </S>
+
+    <S id="combo" title="🔒 Combination Lock">
+      <p><strong>Ask:</strong> "What is the serial number?"</p>
+      <p><strong>Step 1:</strong> Find the <strong>first LETTER</strong> and look up its value:</p>
+      <table className="manual-table"><thead><tr><th>Letter</th><th>Value</th><th>Letter</th><th>Value</th><th>Letter</th><th>Value</th></tr></thead><tbody>
+        <tr><td>A</td><td>5</td><td>J</td><td>7</td><td>S</td><td>9</td></tr>
+        <tr><td>B</td><td>12</td><td>K</td><td>19</td><td>T</td><td>31</td></tr>
+        <tr><td>C</td><td>25</td><td>L</td><td>35</td><td>U</td><td>16</td></tr>
+        <tr><td>D</td><td>33</td><td>M</td><td>10</td><td>V</td><td>24</td></tr>
+        <tr><td>E</td><td>8</td><td>N</td><td>27</td><td>W</td><td>2</td></tr>
+        <tr><td>F</td><td>18</td><td>O</td><td>3</td><td>X</td><td>36</td></tr>
+        <tr><td>G</td><td>15</td><td>P</td><td>14</td><td>Y</td><td>11</td></tr>
+        <tr><td>H</td><td>22</td><td>Q</td><td>38</td><td>Z</td><td>28</td></tr>
+        <tr><td>I</td><td>30</td><td>R</td><td>20</td><td></td><td></td></tr>
+      </tbody></table>
+      <p><strong>Step 2:</strong> Calculate the three numbers:</p>
+      <p>• <strong>N1</strong> = the letter value</p>
+      <p>• <strong>N2</strong> = N1 + 1st digit + 2nd digit. If that is 40 or more, take away 40.</p>
+      <p>• <strong>N3</strong> = (2nd digit × 3) + 3rd digit</p>
+      <p><strong>Step 3:</strong> Tell the Defuser the directions and numbers:</p>
+      <p>1. "Turn <strong>RIGHT</strong> to [N1]."</p>
+      <p>2. "Turn <strong>LEFT</strong> to [N2]."</p>
+      <p>3. "Turn <strong>RIGHT</strong> to [N3]."</p>
+      <p>4. "Press TRY UNLOCK" after each turn. Be sure first: a wrong try is a mistake.</p>
+      <p style={{color:"#888",fontStyle:"italic"}}>The pattern is always RIGHT → LEFT → RIGHT. Use paper for the math.</p>
+    </S>
+    {(window.EXTRA_MODULES||[]).map((m,i,all)=>{
+      // Two modules can share one manual (Teen Code + Teen Code: Twins). On paper, print it once.
+      const first=all.find(x=>x.Manual===m.Manual), shown=!only||only.includes(first.id);
+      return (<S key={m.id} id={m.id} title={m.name}>{print&&first!==m&&shown?<p>Use the <strong>{first.name}</strong> section. It is the same.</p>:<m.Manual/>}</S>);})}
+  </div></MANUAL.Print.Provider>);
+};
+
+/* ===== MANUAL CODE + PRINTING =====
+   The code is a hash of the whole paper manual's text (all sections, all codebooks), so it changes by itself
+   whenever a rule, a table or the codebook cycle changes. The game shows it on the menu and on the bomb;
+   every printed page shows it too. Same code = this printout goes with this game. */
+let MANUAL_CODE=null;
+const getManualCode=()=>{
+  if(MANUAL_CODE)return MANUAL_CODE;
+  const div=document.createElement("div"), root=ReactDOM.createRoot(div);
+  ReactDOM.flushSync(()=>root.render(<ExpertManual print/>));
+  const text=div.textContent; root.unmount();
+  return (MANUAL_CODE=MANUAL.code(text));
+};
+const manualFileName=(label)=>`ESL-Bomb-Squad-DEMO-Manual_v${MANUAL.VERSION}_${getManualCode()}${label?"_"+label.replace(/\s+/g,"-"):""}`;
+const printManual=(label)=>{const old=document.title;document.title=manualFileName(label);window.print();setTimeout(()=>{document.title=old;},500);};
+const PrintManual = ({only,label}) => {
+  const code=getManualCode(), today=new Date().toISOString().slice(0,10);
+  return (<div className="print-manual">
+    <table className="pm-frame"><thead><tr><td><div className="pm-stamp"><span>ESL BOMB SQUAD DEMO · EXPERT MANUAL{label?` · ${label}`:""}</span><span>v{MANUAL.VERSION} · CODE <b>{code}</b></span></div></td></tr></thead>
+    <tbody><tr><td>
+      <div className="pm-cover">
+        <h1>📖 BOMB DEFUSAL MANUAL</h1><p className="manual-subtitle">CLASSIFIED — For Experts Only</p>
+        <div className="pm-id"><div><small>VERSION</small><b>{MANUAL.VERSION}</b></div><div><small>MANUAL CODE</small><b>{code}</b></div><div><small>CODEBOOK</small><b>{MANUAL.CYCLE}</b></div></div>
+        <p><strong>Check before you play:</strong> the game's menu and the top of the bomb show a MANUAL CODE. It must be <strong>{code}</strong>. If it is different, this manual is for another version of the game. Do not use it.</p>
+        <p className="pm-meta">{label?`This copy has the sections for ${label} only. `:"This copy has every section. "}Printed {today}.</p>
+      </div>
+      <ExpertManual print only={only}/>
+    </td></tr></tbody></table>
+  </div>);
+};
+
+/* ===== SETTINGS / BOMB / WIN-LOSE / APP — same structure as before ===== */
+/* fair shuffle (Fisher–Yates) for drawing a mission from the module pool */
+const shuffled = (arr) => { const a=[...arr]; for(let i=a.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[a[i],a[j]]=[a[j],a[i]];} return a; };
+const rankOf = (m) => ["A0","A1","A2","B1","B2"].indexOf(String(m.difficulty).slice(0,2));
+/* setup list order: difficulty first, then A–Z by name (ignoring the emoji) */
+const SORTED_MODULES = (() => { const rank=(m)=>rankOf(m), nm=(m)=>m.name.replace(/^[^A-Za-z]+/,"");
+  return [...MODULES_LIST].sort((x,y)=>rank(x)-rank(y)||nm(x).localeCompare(nm(y))); })();
+/* ===== CAMPAIGN =====
+   One line per mission: edit freely. `modules` are module ids; the LAST one is the finale
+   (it stays locked until the others are defused; needs 3 or more modules). `timer` is in seconds. */
+const MISSIONS = [
+  { id:"demo", name:"Demo Bomb", timer:180, modules:["colorWires","guessWho","monsterLab","symbolKeypad","bigButton"] },
+].map((m,i)=>({...m,num:i+1,modules:m.modules.filter(id=>MODULES_LIST.some(x=>x.id===id))}));
+
+const TEAMS = [["🐯","TIGERS"],["🦁","LIONS"],["🐵","MONKEYS"],["🐻","BEARS"],["🐰","RABBITS"],["🐶","DOGS"],["🐱","CATS"],["🐦","BIRDS"],["🐟","FISH"],["🐘","ELEPHANTS"],["🐴","HORSES"],["🐸","FROGS"]];
+
+/* saved on this device only (the devices are not linked) */
+const STORE = {
+  get:(k,d)=>{try{const v=localStorage.getItem("eslbomb-"+k);return v==null?d:JSON.parse(v);}catch(e){return d;}},
+  set:(k,v)=>{try{localStorage.setItem("eslbomb-"+k,JSON.stringify(v));}catch(e){}},
+};
+const fmtTime = (t) => `${Math.floor(t/60)}:${String(t%60).padStart(2,"0")}`;
+/* stars: 1 for defusing the bomb, +1 for 0–1 mistakes, +1 for a quarter of the time still on the clock */
+const fastTime = (timer) => Math.ceil(timer/4);
+const starsFor = (r) => !r.win ? 0 : 1 + (r.strikes<=1?1:0) + (r.timeLeft>=fastTime(r.timer)?1:0);
+
+/* Turn a spec into one bomb. Called again for every replay, so each bomb is a fresh draw.
+   spec = {mission} for the campaign, or {timer,pool,count,finale} from free play. */
+const buildMission = (spec) => {
+  let order, hasFinale;
+  if(spec.mission){ const ids=spec.mission.modules; order=[...shuffled(ids.slice(0,-1)),ids[ids.length-1]]; hasFinale=ids.length>=3; }
+  else{
+    let ids=shuffled(spec.pool).slice(0,spec.count);
+    while(ids.length<spec.count)ids=[...ids,...shuffled(spec.pool).slice(0,spec.count-ids.length)]; /* pool smaller than the count: fill with copies, spread evenly */
+    order=shuffled(ids); hasFinale=!!spec.finale&&order.length>=3;
+    if(hasFinale){ /* the hardest module is the finale */ const r=(id)=>rankOf(MODULES_LIST.find(m=>m.id===id)); const top=order.reduce((a,b)=>r(b)>r(a)?b:a); const i=order.indexOf(top); order=[...order.slice(0,i),...order.slice(i+1),top]; }
+  }
+  /* each copy gets its own id so the bomb can tell copies apart */
+  const modules=order.map((id,i)=>({...MODULES_LIST.find(m=>m.id===id),id:id+"#"+i,baseId:id}));
+  return {timer:spec.mission?spec.mission.timer:spec.timer,modules,finaleId:hasFinale?modules[modules.length-1].id:null,mission:spec.mission||null,fun:!!spec.fun,spec};
+};
+
+const FUN_NOTE = "Alarm clock, lights out and a bomb quiz. Fun, but it takes time away from talking.";
+const SettingsPanel = ({onStartGame,fun,setFun}) => {
+  const [timer,setTimer]=useState(300);
+  /* MODULES = how many go on the bomb. The pool (sel) = what the bomb is built from; it needs at least 1.
+     - pool bigger than MODULES: the bomb draws that many at random, no repeats.
+     - pool smaller than MODULES: every pool module goes on, then copies fill the rest (1 ticked, MODULES 6 = six copies).
+     Raising MODULES ticks the next modules in list order (easiest first, then A–Z), unless the teacher has
+     already cut the pool below the count on purpose; then it only adds copies. Lowering it never unticks anything. */
+  /* (the draw itself is in buildMission) */
+  const [pool,setPool]=useState({count:3,sel:SORTED_MODULES.slice(0,3).map(m=>m.id)});
+  const {count:moduleCount,sel}=pool;
+  const changeCount=(n)=>setPool(({count,sel})=>({count:n,sel:sel.length<count?sel:[...sel,...SORTED_MODULES.filter(m=>!sel.includes(m.id)).slice(0,Math.max(0,n-sel.length)).map(m=>m.id)]}));
+  const toggle=(id)=>setPool(p=>p.sel.includes(id)?(p.sel.length<=1?p:{...p,sel:p.sel.filter(m=>m!==id)}):{...p,sel:[...p.sel,id]});
+  const [finale,setFinale]=useState(true);
+  const handleStart=()=>{SFX.unlock();onStartGame({timer,pool:sel,count:moduleCount,finale,fun});};
+  const presets=[{l:"2:00",v:120},{l:"3:00",v:180},{l:"5:00",v:300},{l:"7:00",v:420},{l:"10:00",v:600}];
+  return (<div className="settings-panel"><h2>⚙️ MISSION SETUP</h2>
+    <div className="setting-group"><label>TIMER</label><div className="timer-selector">{presets.map(p=>(<button key={p.v} onClick={()=>setTimer(p.v)} className={`timer-btn ${timer===p.v?"active":""}`}>{p.l}</button>))}</div></div>
+    <div className="setting-group"><label>MODULES: {moduleCount}</label><input type="range" min={1} max={10} value={moduleCount} onChange={e=>changeCount(Number(e.target.value))} className="module-slider"/></div>
+    <div className="setting-group"><label>MODULE POOL ({sel.length} selected)</label>
+      <p className="pool-note">{sel.length>moduleCount?`Each bomb gets ${moduleCount} of these ${sel.length} at random.`:sel.length===moduleCount?`Every bomb gets these ${moduleCount}. Add more for a random pick.`:sel.length===1?`Every bomb gets ${moduleCount} copies of this module.`:`Every bomb gets these ${sel.length}, plus ${moduleCount-sel.length} more ${moduleCount-sel.length===1?"copy":"copies"} to make ${moduleCount}.`}</p>
+      <div className="module-toggles">{SORTED_MODULES.map(mod=>(<button key={mod.id} onClick={()=>toggle(mod.id)} className={`module-toggle ${sel.includes(mod.id)?"active":""} ${sel.length===1&&sel.includes(mod.id)?"locked":""}`}><span className="toggle-name">{mod.name}</span><span className="toggle-diff">{mod.difficulty}</span></button>))}</div></div>
+    <div className="setting-group"><label>LAST MODULE</label><div className="timer-selector"><button onClick={()=>setFinale(true)} className={`timer-btn ${finale?"active":""}`}>🔒 LOCKED UNTIL THE END</button><button onClick={()=>setFinale(false)} className={`timer-btn ${!finale?"active":""}`}>ALL OPEN</button></div>
+      <p className="pool-note" style={{marginTop:"0.5rem"}}>{finale?(moduleCount>=3?"The hardest module stays locked until the others are defused.":"Needs 3 or more modules, so this bomb has no lock."):"All modules can be played from the start."}</p></div>
+    <div className="setting-group"><label>FUN MODE</label><div className="timer-selector"><button onClick={()=>setFun(false)} className={`timer-btn ${!fun?"active":""}`}>OFF</button><button onClick={()=>setFun(true)} className={`timer-btn ${fun?"active":""}`}>🎲 ON</button></div>
+      <p className="pool-note" style={{marginTop:"0.5rem"}}>{FUN_NOTE}</p></div>
+    <button onClick={handleStart} className="start-game-btn">🚀 START MISSION</button></div>);
+};
+
+/* ===== FUN MODE (off unless the teacher turns it on) =====
+   Three KTANE-style interruptions. They are fun, but they take time away from talking, so they are never on by default.
+   - Alarm clock: rings until someone taps it. No penalty.
+   - Lights out: the modules go dark for a few seconds.
+   - Bomb quiz: a yes/no question in English about the bomb (color, batteries, sticker). Wrong or too slow = a strike.
+   In test mode (?test) everything comes much sooner. */
+const funDelay = (a,b) => (a+Math.random()*(b-a))*1000*(TEST_MODE?0.12:1);
+const makeBombQuestion = (bomb) => {
+  const pick=(a)=>a[Math.floor(Math.random()*a.length)], truth=Math.random()<0.5, kind=pick(["color","batteries","sticker"]);
+  if(kind==="color"){const c=truth?bomb.color:pick(Object.keys(BOMB_COLORS).filter(x=>x!==bomb.color));return{text:`Is the bomb ${c}?`,yes:truth};}
+  if(kind==="batteries"){const n=truth?bomb.batteries:pick([1,2,3,4].filter(x=>x!==bomb.batteries));return{text:`Does the bomb have ${NUMBER_WORDS[n]} ${n===1?"battery":"batteries"}?`,yes:truth};}
+  const st=truth?bomb.sticker:pick(BOMB_STICKERS.filter(x=>x.name!==bomb.sticker.name));
+  return{text:`Is there ${/^[aeiou]/.test(st.name)?"an":"a"} ${st.name} on the bomb?`,yes:truth};
+};
+const QUIZ_SECONDS = 20;
+const BombQuiz = ({bomb,active,onStrike}) => {
+  const [q,setQ]=useState(null); /* null = asleep, or {text, yes, left} */
+  useEffect(()=>{if(!active||q)return;const t=setTimeout(()=>{SFX.needy();setQ({...makeBombQuestion(bomb),left:QUIZ_SECONDS});},funDelay(25,45));return()=>clearTimeout(t);},[active,!q]);
+  useEffect(()=>{if(!active||!q)return;if(q.left<=0){onStrike();setQ(null);return;}const t=setTimeout(()=>setQ(x=>x&&{...x,left:x.left-1}),1000);return()=>clearTimeout(t);},[active,q]);
+  const answer=(yes)=>{if(!q)return;if(yes===q.yes)SFX.ok();else onStrike();setQ(null);};
+  return (<div className={`module-wrapper quiz-box ${q?"awake":""}`}><div className="module-content"><h3>❓ BOMB QUIZ</h3>
+    {q?(<div><p className="quiz-text">{q.text}</p><div className="quiz-bar"><span style={{width:`${q.left/QUIZ_SECONDS*100}%`}}></span></div>
+      <div className="options-grid"><button className="option-btn" onClick={()=>answer(true)}>YES</button><button className="option-btn" onClick={()=>answer(false)}>NO</button></div></div>)
+     :(<p className="quiz-sleep">💤</p>)}</div></div>);
+};
+const AlarmClock = ({active}) => {
+  const [ringing,setRinging]=useState(false);
+  useEffect(()=>{if(!active||ringing)return;const t=setTimeout(()=>setRinging(true),funDelay(40,70));return()=>clearTimeout(t);},[active,ringing]);
+  useEffect(()=>{if(!active||!ringing)return;SFX.alarm();const t=setInterval(()=>SFX.alarm(),650);return()=>clearInterval(t);},[active,ringing]);
+  return ringing?(<button className="alarm-clock" onClick={()=>setRinging(false)}><span>⏰</span>TAP!</button>):null;
+};
+/* returns true while the lights are out */
+const useLightsOut = (on,active) => {
+  const [dark,setDark]=useState(false);
+  useEffect(()=>{if(!on||!active)return;const t=setTimeout(()=>{if(!dark)SFX.lights();setDark(d=>!d);},dark?4000:funDelay(50,80));return()=>clearTimeout(t);},[on,active,dark]);
+  return on&&active&&dark;
+};
+
+const BombComponent = ({config,team,onGameEnd}) => {
+  const [timeLeft,setTimeLeft]=useState(config.timer);const [strikes,setStrikes]=useState(0);const [completed,setCompleted]=useState([]);
+  const [serialNumber]=useState(generateSerialNumber);const [gameStatus,setGameStatus]=useState("countdown");const [shake,setShake]=useState(false);const [countdown,setCountdown]=useState(3);const maxStrikes=3;const [muted,setMuted]=useState(SFX.isMuted());
+  const [bomb]=useState(makeBomb); /* color, batteries, sticker */
+  const dark=useLightsOut(!!config.fun,gameStatus==="playing");
+  /* every strike makes the clock run faster: x1, x1.25, x1.5 */
+  const speed=1+0.25*strikes;
+  useEffect(()=>{if(gameStatus!=="countdown")return;if(countdown<=0){SFX.go();setGameStatus("playing");return;}SFX.count();const t=setTimeout(()=>setCountdown(c=>c-1),1000);return()=>clearTimeout(t);},[gameStatus,countdown]);
+  useEffect(()=>{if(gameStatus!=="playing")return;const t=setInterval(()=>setTimeLeft(p=>{if(p<=1){setGameStatus("lost");return 0;}return p-1;}),1000/speed);return()=>clearInterval(t);},[gameStatus,speed]);
+  useEffect(()=>{if(gameStatus==="playing"&&timeLeft>0&&timeLeft<config.timer)SFX.tick(timeLeft,1/speed);},[timeLeft]);
+  useEffect(()=>{if(completed.length===config.modules.length&&config.modules.length>0&&gameStatus==="playing")setGameStatus("won");},[completed,config.modules.length,gameStatus]);
+  const stats=useRef({}); /* per module: {strikes, solved} for the results screen */
+  const stat=(id)=>stats.current[id]||(stats.current[id]={strikes:0,solved:false});
+  useEffect(()=>{if(gameStatus!=="won"&&gameStatus!=="lost")return;const win=gameStatus==="won";if(win)SFX.win();else SFX.boom();
+    onGameEnd({win,reason:win?null:strikes>=maxStrikes?"strikes":"time",timeLeft,timer:config.timer,strikes,funStrikes:stat("fun").strikes,modules:config.modules.map(m=>({name:m.name,...stat(m.id)}))});},[gameStatus]);
+  const finaleLocked=!!config.finaleId&&completed.length<config.modules.length-1;
+  useEffect(()=>{if(config.finaleId&&!finaleLocked&&gameStatus==="playing")SFX.unlockFinale();},[finaleLocked]);
+  const strikesRef=useRef(0); /* a ref, so a module holding an old copy of onStrike still counts correctly */
+  const handleStrike=(id)=>{if(strikesRef.current>=maxStrikes)return;stat(id).strikes++;const s=++strikesRef.current;SFX.strike();setStrikes(s);setShake(true);setTimeout(()=>setShake(false),500);if(s>=maxStrikes)setGameStatus("lost");};
+  const tc=timeLeft<30?"#ff0000":timeLeft<60?"#ff8800":"#00ff00";
+  return (<div className={`bomb-container ${shake?"shake":""}`} style={{borderColor:BOMB_COLORS[bomb.color],boxShadow:`0 0 0 4px ${BOMB_COLORS[bomb.color]},0 0 60px rgba(102,126,234,0.15),inset 0 0 60px rgba(0,0,0,0.3)`}}>
+    {config.fun&&<AlarmClock active={gameStatus==="playing"}/>}
+    {gameStatus==="countdown"&&<div className="countdown-overlay"><div className="countdown-number">{countdown>0?countdown:"GO!"}</div></div>}
+    <div className="bomb-header"><div className="timer-display" style={{color:tc,textShadow:`0 0 15px ${tc}`}}>{Math.floor(timeLeft/60)}:{String(timeLeft%60).padStart(2,"0")}{strikes>0&&<span className="speed-badge">⏩ ×{speed}</span>}</div>
+      <div className="serial-display">{team&&<div className="team-tag">{team[0]} {team[1]}{config.mission?` · MISSION ${config.mission.num}`:""}</div>}<span className="serial-label">SN:</span><span className="serial-value">{serialNumber}</span><div className="manual-code-tag">MANUAL CODE {getManualCode()}</div></div>
+      <div className="bomb-plate"><span className="battery-row">{Array.from({length:bomb.batteries},(_,i)=>(<img key={i} className="pixel-art" alt="battery" src={batterySrc()} width={24} height={42}/>))}</span><span className="sticker"><img className="pixel-art" alt={bomb.sticker.name} src={stickerSrc(bomb.sticker)} width={48} height={48}/></span></div>
+      <div className="strikes-display">{Array.from({length:maxStrikes},(_,i)=>(<span key={i} className={`strike-indicator ${i<strikes?"active":""}`}>{i<strikes?"❌":"⭕"}</span>))}<button className="mute-btn" aria-label={muted?"sound off":"sound on"} onClick={()=>{SFX.setMuted(!muted);setMuted(!muted);}}>{muted?"🔇":"🔊"}</button></div></div>
+    <div className={`modules-grid ${dark?"lights-out":""}`}>{config.modules.map(mod=>(<ModuleWrapper key={mod.id} module={mod} serialNumber={serialNumber} bomb={bomb} locked={finaleLocked&&mod.id===config.finaleId} finale={mod.id===config.finaleId} onComplete={id=>{stat(id).solved=true;if(completed.length+1<config.modules.length)SFX.defuse();setCompleted(p=>[...p,id]);}} onStrike={()=>handleStrike(mod.id)}/>))}{config.fun&&<BombQuiz bomb={bomb} active={gameStatus==="playing"} onStrike={()=>handleStrike("fun")}/>}</div></div>);
+};
+
+/* ===== RESULTS ===== */
+const ResultsScreen = ({result,config,team,best,isNewBest,onReplay,onSwap,onNext,onMenu}) => {
+  const stars=starsFor(result), need=fastTime(result.timer);
+  useEffect(()=>{SFX.stars(stars);},[]);
+  const Row=({ok,children})=>(<div className={`check-row ${ok?"ok":""}`}><span>{ok?"✅":"⬜"}</span><span>{children}</span></div>);
+  return (<div className={`game-over-screen ${result.win?"win":"lose"}`}><div className={result.win?"confetti-bg":"explosion-bg"}></div>
+    <p className="result-team">{team[0]} TEAM {team[1]}{config.mission?` · MISSION ${config.mission.num}: ${config.mission.name.toUpperCase()}`:""}</p>
+    <h1>{result.win?"🎉 BOMB DEFUSED!":"💥 BOOM!"}</h1>
+    {!result.win&&<p className="result-reason">{result.reason==="time"?"Time ran out!":"Too many mistakes!"}</p>}
+    <div className="stars-row">{[0,1,2].map(i=>(<span key={i} className={`star ${i<stars?"on":""}`} style={{animationDelay:`${0.6+i*0.45}s`}}>★</span>))}</div>
+    {isNewBest&&<p className="new-best">NEW BEST!</p>}
+    {!isNewBest&&best&&best.stars>0&&<p className="old-best">Best: {"★".repeat(best.stars)}{"☆".repeat(3-best.stars)}</p>}
+    <div className="result-card">
+      <Row ok={result.win}>Bomb defused</Row>
+      <Row ok={result.win&&result.strikes<=1}>0 or 1 mistakes <em>(you: {result.strikes})</em></Row>
+      <Row ok={result.win&&result.timeLeft>=need}>Time left {fmtTime(need)} or more <em>(you: {fmtTime(result.timeLeft)})</em></Row>
+    </div>
+    <div className="result-card">{result.modules.map((m,i)=>(<div key={i} className="mod-row"><span>{m.solved?"✅":"💣"}</span><span className="mod-name">{m.name}</span><span className="mod-x">{m.strikes>0?"❌".repeat(m.strikes):""}</span></div>))}{result.funStrikes>0&&<div className="mod-row"><span>🎲</span><span className="mod-name">Bomb Quiz</span><span className="mod-x">{"❌".repeat(result.funStrikes)}</span></div>}</div>
+    <div className="result-buttons">
+      {result.win&&onNext&&<button className="play-again-btn win" onClick={onNext}>NEXT MISSION ▶</button>}
+      <button className={`play-again-btn ${result.win&&onNext?"plain":result.win?"win":"lose"}`} onClick={onReplay}>{result.win?"PLAY AGAIN":"TRY AGAIN"}</button>
+      <button className="play-again-btn plain" onClick={onSwap}>🔄 SWAP ROLES: OPEN MANUAL</button>
+      <button className="play-again-btn ghost" onClick={onMenu}>MENU</button>
+    </div></div>);
+};
+
+/* ===== MISSION SELECT ===== */
+const MissionSelect = ({progress,onPick,fun,setFun}) => {
+  const total=MISSIONS.reduce((n,m)=>n+((progress[m.id]||{}).stars||0),0);
+  const next=MISSIONS.find(m=>!((progress[m.id]||{}).stars));
+  return (<div className="settings-panel" style={{maxWidth:"760px"}}><h2>🎯 MISSIONS</h2>
+    <p className="mission-total">★ {total} / {MISSIONS.length*3}</p>
+    <div className="mission-grid">{MISSIONS.map(m=>{const st=(progress[m.id]||{}).stars||0;return (
+      <button key={m.id} className={`mission-card ${st>0?"done":""} ${next&&next.id===m.id?"next":""}`} onClick={()=>{SFX.unlock();onPick(m);}}>
+        <span className="mission-num">{m.num}</span><span className="mission-name">{m.name}</span>
+        <span className="mission-stars">{"★".repeat(st)}<i>{"★".repeat(3-st)}</i></span>
+        <span className="mission-meta">{m.modules.length} modules · {fmtTime(m.timer)}</span>
+        {next&&next.id===m.id&&<span className="mission-next">NEXT</span>}</button>);})}</div>
+    <div className="fun-row"><button onClick={()=>setFun(!fun)} className={`timer-btn ${fun?"active":""}`}>🎲 FUN MODE: {fun?"ON":"OFF"}</button><span>{FUN_NOTE}</span></div></div>);
+};
+
+function App(){
+  const [screen,setScreen]=useState("menu");const [config,setConfig]=useState(null);const [showManual,setShowManual]=useState(false);const [gameResult,setGameResult]=useState(null);const [gameKey,setGameKey]=useState(0);
+  const [teamIdx,setTeamIdx]=useState(()=>{const t=STORE.get("team",null);if(t!=null&&TEAMS[t])return t;const r=Math.floor(Math.random()*TEAMS.length);STORE.set("team",r);return r;});
+  const team=TEAMS[teamIdx];const nextTeam=()=>{const t=(teamIdx+1)%TEAMS.length;setTeamIdx(t);STORE.set("team",t);};
+  const [progress,setProgress]=useState(()=>STORE.get("progress",{})); /* {missionId:{stars,timeLeft}} */
+  const [fun,setFun]=useState(false); /* Fun mode: never saved, so every class starts with it off */
+  const [manualOnly,setManualOnly]=useState(null); /* null = whole manual, or {label, ids} */
+  const reset=()=>{setScreen("menu");setConfig(null);setShowManual(false);setGameResult(null);setGameKey(k=>k+1);};
+  const startGame=(spec)=>{setConfig(buildMission(spec));setGameResult(null);setShowManual(false);setGameKey(k=>k+1);setScreen("playing");};
+  const endGame=(result)=>{
+    let best=null,isNewBest=false;
+    if(config.mission){best=progress[config.mission.id]||null;const stars=starsFor(result);
+      if(stars>0&&(!best||stars>best.stars||(stars===best.stars&&result.timeLeft>best.timeLeft))){isNewBest=true;const p={...progress,[config.mission.id]:{stars,timeLeft:result.timeLeft}};setProgress(p);STORE.set("progress",p);}}
+    setGameResult({result,best,isNewBest});setScreen("result");};
+  const nextMission=config&&config.mission?MISSIONS[config.mission.num]:null; /* num is 1-based, so this is the one after */
+  const openManualFor=(cfg)=>{setManualOnly(cfg.mission?{label:`MISSION ${cfg.mission.num}`,ids:cfg.mission.modules}:{label:"THIS BOMB",ids:[...new Set(cfg.modules.map(m=>m.baseId))]});setScreen("manual-only");};
+  return (<div className="app">
+    <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&family=Share+Tech+Mono&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet"/>
+    <style>{`
+      *{margin:0;padding:0;box-sizing:border-box;}
+      .app{min-height:100vh;background:linear-gradient(135deg,#667eea 0%,#764ba2 15%,#2d1b4e 35%,#1a1a2e 50%,#0a0e17 100%);color:#eee;font-family:'Share Tech Mono','Courier New',monospace;}
+      .menu-screen{display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:100vh;text-align:center;position:relative;overflow:hidden;}
+      .menu-screen::before{content:'';position:absolute;inset:0;background:radial-gradient(ellipse at center,rgba(102,126,234,0.15) 0%,transparent 70%);pointer-events:none;}
+      .bomb-icon{font-size:8rem;margin-bottom:2rem;animation:bombFloat 4s ease-in-out infinite;filter:drop-shadow(0 0 30px rgba(255,100,0,0.3));}
+      @keyframes bombFloat{0%,100%{transform:translateY(0) rotate(-5deg);}50%{transform:translateY(-20px) rotate(5deg);}}
+      .demo-tag{font-family:'Orbitron',sans-serif;color:#ffcc00;letter-spacing:10px;margin:-0.3rem 0 0.6rem;font-weight:700;}
+      .game-title{font-family:'Orbitron',sans-serif;font-size:3rem;font-weight:900;color:#ff4444;text-shadow:0 0 40px rgba(255,68,68,0.4);letter-spacing:4px;margin-bottom:0.5rem;animation:titlePulse 3s ease-in-out infinite;}
+      @keyframes titlePulse{0%,100%{filter:brightness(1);}50%{filter:brightness(1.2);}}
+      .game-subtitle{font-size:1rem;color:#888;margin-bottom:3rem;letter-spacing:8px;text-transform:uppercase;}
+      .menu-buttons{display:flex;flex-direction:column;gap:1rem;z-index:1;}
+      .menu-btn{font-family:'Orbitron',sans-serif;font-size:1.1rem;padding:1rem 3rem;border:2px solid;background:transparent;cursor:pointer;transition:all 0.3s;letter-spacing:2px;}
+      .menu-btn.primary{border-color:#ff4444;color:#ff4444;}.menu-btn.primary:hover{background:#ff4444;color:#000;box-shadow:0 0 30px rgba(255,68,68,0.5);}
+      .menu-btn.secondary{border-color:#4488ff;color:#4488ff;}.menu-btn.secondary:hover{background:#4488ff;color:#000;box-shadow:0 0 30px rgba(68,136,255,0.5);}
+      .settings-panel{max-width:600px;margin:2rem auto;padding:2rem;background:rgba(20,20,35,0.95);border:1px solid #333;border-radius:8px;}
+      .settings-panel h2{font-family:'Orbitron',sans-serif;color:#ffcc00;margin-bottom:2rem;text-align:center;}
+      .setting-group{margin-bottom:2rem;}.setting-group label{display:block;color:#aaa;margin-bottom:0.75rem;font-size:0.9rem;text-transform:uppercase;letter-spacing:1px;}
+      .timer-selector{display:flex;gap:0.5rem;flex-wrap:wrap;}
+      .timer-btn{padding:0.75rem 1.25rem;background:#1a1a2e;border:1px solid #444;color:#888;cursor:pointer;transition:all 0.2s;font-family:'Share Tech Mono',monospace;}
+      .timer-btn.active{background:#ff4444;border-color:#ff4444;color:#000;font-weight:bold;}.timer-btn:hover:not(.active){border-color:#888;color:#fff;}
+      .module-slider{width:100%;height:8px;background:#333;border-radius:4px;appearance:none;cursor:pointer;}.module-slider::-webkit-slider-thumb{appearance:none;width:24px;height:24px;background:#ffcc00;border-radius:50%;cursor:pointer;}
+      .module-toggles{display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:0.6rem;}
+      .module-toggle{padding:0.75rem;background:#1a1a2e;border:1px solid #333;color:#666;cursor:pointer;transition:all 0.2s;display:flex;flex-direction:column;align-items:center;gap:0.2rem;font-family:'Share Tech Mono',monospace;font-size:0.8rem;}
+      .module-toggle.active{border-color:#4caf50;color:#4caf50;background:rgba(76,175,80,0.1);}.module-toggle:hover:not(.active){border-color:#666;color:#aaa;}
+      .module-toggle.locked{cursor:not-allowed;}.pool-note{color:#888;font-size:0.8rem;margin:-0.25rem 0 0.75rem;}.toggle-name{font-size:0.8rem;}.toggle-diff{font-size:0.65rem;opacity:0.7;}
+      .start-game-btn{width:100%;padding:1.25rem;font-family:'Orbitron',sans-serif;font-size:1.2rem;background:linear-gradient(135deg,#ff4444,#ff8800);border:none;color:#000;cursor:pointer;transition:all 0.3s;letter-spacing:2px;margin-top:1rem;font-weight:bold;}
+      .start-game-btn:hover:not(:disabled){transform:scale(1.02);box-shadow:0 0 30px rgba(255,100,0,0.5);}.start-game-btn:disabled{opacity:0.5;cursor:not-allowed;}
+      .warning-text{color:#ff8800;text-align:center;margin-top:1rem;font-size:0.9rem;}
+      .back-btn{position:fixed;top:1rem;left:1rem;padding:0.5rem 1rem;background:transparent;border:1px solid #666;color:#888;font-family:'Share Tech Mono',monospace;cursor:pointer;z-index:100;transition:all 0.2s;}.back-btn:hover{border-color:#fff;color:#fff;}
+      .manual-toggle{position:fixed;top:1rem;right:1rem;padding:0.5rem 1rem;border:1px solid #f1c40f;background:transparent;color:#f1c40f;cursor:pointer;z-index:100;font-family:'Share Tech Mono',monospace;border-radius:4px;transition:all 0.2s;}
+      .manual-toggle.active{background:#f1c40f;color:#000;}
+      .manual-overlay{position:fixed;top:0;right:-450px;width:min(420px,90vw);height:100vh;overflow-y:auto;z-index:90;box-shadow:-4px 0 30px rgba(0,0,0,0.7);transition:right 0.3s ease;}.manual-overlay.visible{right:0;}
+      .bomb-container{background:linear-gradient(180deg,#1a1a2e 0%,#12101f 100%);border:3px solid #3a3560;border-radius:12px;padding:1.5rem;margin:1rem;box-shadow:0 0 60px rgba(102,126,234,0.15),inset 0 0 60px rgba(0,0,0,0.3);position:relative;}
+      .bomb-container.shake{animation:shake 0.5s ease-in-out;}
+      @keyframes shake{0%,100%{transform:translateX(0);}20%{transform:translateX(-10px);}40%{transform:translateX(10px);}60%{transform:translateX(-10px);}80%{transform:translateX(10px);}}
+      .countdown-overlay{position:absolute;inset:0;background:rgba(0,0,0,0.85);display:flex;align-items:center;justify-content:center;z-index:50;border-radius:12px;}
+      .countdown-number{font-family:'Orbitron',sans-serif;font-size:6rem;font-weight:900;color:#ff4444;text-shadow:0 0 40px rgba(255,68,68,0.6);animation:countPulse 1s ease-in-out infinite;}
+      @keyframes countPulse{0%,100%{transform:scale(1);opacity:1;}50%{transform:scale(1.2);opacity:0.8;}}
+      .bomb-header{display:flex;justify-content:space-between;align-items:center;background:#1a1a2e;padding:1.25rem 1.5rem;border-radius:8px;margin-bottom:1.5rem;border:1px solid #333;flex-wrap:wrap;gap:0.75rem;}
+      .timer-display{font-family:'Orbitron',sans-serif;font-size:2.5rem;font-weight:700;letter-spacing:2px;}
+      .serial-display{font-size:0.9rem;color:#888;}.serial-label{margin-right:0.5rem;}
+      .serial-value{font-family:'JetBrains Mono',monospace;font-size:1.1rem;color:#ffcc00;letter-spacing:2px;}
+      .strikes-display{display:flex;gap:0.5rem;font-size:1.5rem;align-items:center;}.speed-badge{font-size:0.9rem;margin-left:0.6rem;color:#ff8800;text-shadow:none;letter-spacing:0;vertical-align:middle;}.mute-btn{margin-left:0.75rem;background:transparent;border:1px solid #444;border-radius:6px;font-size:1.1rem;padding:0.2rem 0.45rem;cursor:pointer;}.strike-indicator{opacity:0.3;transition:all 0.3s;}.strike-indicator.active{opacity:1;animation:strikeFlash 0.5s ease;}
+      @keyframes strikeFlash{0%,100%{transform:scale(1);}50%{transform:scale(1.3);}}
+      .modules-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:1.25rem;margin-bottom:1.5rem;}
+      .module-wrapper{background:#1a1a2e;border:2px solid #333;border-radius:8px;position:relative;overflow:hidden;transition:all 0.3s;}.module-wrapper.success{border-color:#4caf50;background:rgba(76,175,80,0.1);}
+      .module-status-indicator{position:absolute;top:0.5rem;right:0.5rem;z-index:10;}
+      .status-icon{display:inline-flex;align-items:center;justify-content:center;width:32px;height:32px;background:#4caf50;color:#fff;border-radius:50%;font-size:1.2rem;font-weight:bold;}
+      .status-dot{display:inline-block;width:12px;height:12px;background:#ffcc00;border-radius:50%;animation:pulse 1.5s ease-in-out infinite;}
+      @keyframes pulse{0%,100%{opacity:1;transform:scale(1);}50%{opacity:0.5;transform:scale(0.8);}}
+      .module-complete{position:absolute;inset:0;z-index:5;background:rgba(76,175,80,0.28);display:flex;align-items:center;justify-content:center;cursor:default;}.complete-badge{display:flex;align-items:center;gap:0.5rem;padding:0.4rem 0.9rem;background:rgba(10,21,32,0.85);border:2px solid #4caf50;border-radius:6px;color:#4caf50;font-family:'Orbitron',sans-serif;font-size:0.9rem;}.complete-icon{font-size:1.3rem;}
+      .module-content{padding:1.25rem;}.module-content h3{font-family:'Orbitron',sans-serif;color:#ffcc00;margin-bottom:0.6rem;font-size:0.9rem;}.module-hint{color:#666;font-size:0.75rem;margin-bottom:0.75rem;}
+      .wire-container{display:flex;flex-direction:column;gap:0.3rem;align-self:stretch;width:100%;box-sizing:border-box;flex:1;justify-content:center;padding:0.5rem;background:#4a4f5c;border:2px solid #333;border-radius:6px;}.wire{display:block;width:100%;padding:0;background:none;border:none;cursor:pointer;}.wire img{width:100%;}.wire:hover:not(:disabled) img{filter:brightness(1.15) drop-shadow(0 0 2px #0ff);}.wire:disabled{cursor:default;}
+      .options-grid{display:grid;grid-template-columns:1fr 1fr;gap:0.5rem;}
+      .option-btn{padding:0.6rem;background:#1a1a2e;border:1px solid #333;color:#0ff;cursor:pointer;border-radius:4px;font-family:'Share Tech Mono',monospace;font-size:0.8rem;font-weight:bold;transition:all 0.2s;}.option-btn:hover:not(:disabled):not(.correct){border-color:#0ff;background:rgba(0,255,255,0.05);}.option-btn.correct{background:#4caf50;border-color:#4caf50;color:#fff;}.option-btn:disabled{cursor:default;}
+      .symbol-btn{padding:0.8rem;font-size:1.8rem;background:#1a1a2e;border:1px solid #333;border-radius:4px;cursor:pointer;transition:all 0.2s;}.symbol-btn:hover:not(:disabled):not(.correct){border-color:#0ff;}.symbol-btn.correct{background:#4caf50;border-color:#4caf50;}.symbol-btn:disabled{cursor:default;}
+      .keypad-display{background:#0a1520;padding:0.6rem;border-radius:4px;margin-bottom:0.5rem;color:#0f0;font-size:1rem;letter-spacing:0.2rem;text-align:center;}
+      .keypad-grid{display:grid;grid-template-columns:repeat(5,1fr);gap:0.3rem;}
+      .keypad-btn{padding:0.6rem;background:#1a2a3a;border:1px solid #0ff3;color:#0ff;border-radius:4px;cursor:pointer;font-family:'Share Tech Mono',monospace;font-size:1rem;transition:all 0.2s;}.keypad-btn.used{background:#0a1520;color:#333;cursor:default;}
+      .clear-btn{margin-top:0.3rem;padding:0.3rem 0.8rem;background:transparent;border:1px solid #f55;color:#f55;border-radius:4px;cursor:pointer;font-size:0.7rem;font-family:'Share Tech Mono',monospace;}
+      .switch-grid{display:grid;grid-template-columns:1fr 1fr;gap:0.5rem;}
+      .switch-btn{padding:0.75rem;border:3px solid transparent;border-radius:8px;cursor:pointer;display:flex;flex-direction:column;align-items:center;gap:0.25rem;transition:all 0.2s;}.switch-btn.solved{border-color:#4caf50;opacity:0.7;cursor:default;}.switch-btn:hover:not(.solved){transform:scale(1.05);}
+      .switch-arrow{font-size:1.5rem;}.switch-dir-label{font-size:0.6rem;text-transform:uppercase;}
+      .monster-display{background:#0a1520;border-radius:8px;padding:0.5rem;text-align:center;margin-bottom:0.75rem;border:2px solid #333;}.pixel-art{image-rendering:pixelated;max-width:100%;height:auto;display:block;margin:0 auto;}
+      .clock-btn{padding:0.3rem 0.8rem;background:#1a2a3a;border:1px solid #0ff3;color:#0ff;cursor:pointer;border-radius:4px;font-family:'Share Tech Mono',monospace;transition:all 0.2s;}.clock-btn:hover{background:rgba(0,255,255,0.1);}
+      .submit-btn{width:100%;padding:0.6rem;background:rgba(0,255,255,0.1);border:1px solid #0ff;color:#0ff;border-radius:4px;cursor:pointer;font-family:'Orbitron',sans-serif;font-weight:bold;font-size:0.85rem;transition:all 0.2s;}.submit-btn:hover:not(:disabled){background:rgba(0,255,255,0.2);}.submit-btn.correct{background:#4caf50;border-color:#4caf50;color:#fff;cursor:default;}
+      .manual-page-content{padding:2rem;max-width:600px;margin:0 auto;font-family:Georgia,'Times New Roman',serif;color:#222;background:#f5f0e6;min-height:100vh;line-height:1.6;}
+      .manual-title{text-align:center;border-bottom:3px double #333;padding-bottom:0.5rem;font-size:1.4rem;font-family:Georgia,serif;}
+      .manual-subtitle{text-align:center;font-style:italic;color:#666;font-size:0.75rem;margin-bottom:1.5rem;}
+      .manual-section{margin-bottom:0.5rem;border:1px solid #ddd;border-radius:6px;overflow:hidden;}
+      .manual-section h2{font-size:1rem;padding:0.75rem;margin:0;background:#e8e0d0;border-bottom:1px solid #ddd;user-select:none;}
+      .manual-section h2:hover{background:#ddd8c8;}
+      .manual-section>div{padding:0.75rem;}
+      .manual-section p{font-size:0.8rem;margin-bottom:0.3rem;}.manual-list{font-size:0.7rem;color:#555;line-height:1.8;}
+      .manual-table{width:100%;border-collapse:collapse;font-size:0.75rem;margin:0.5rem 0;}
+      .manual-table th,.manual-table td{border:1px solid #999;padding:0.3rem;text-align:center;}
+      .manual-table th{background:#ddd;font-weight:bold;}
+      .color-cell{color:#fff;font-weight:bold;}.color-cell.red{background:#e74c3c;}.color-cell.blue{background:#3498db;}.color-cell.yellow{background:#f1c40f;color:#333;}.color-cell.green{background:#2ecc71;}
+      .game-over-screen{display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:100vh;text-align:center;padding:2rem;position:relative;overflow:hidden;}
+      .game-over-screen h1{font-family:'Orbitron',sans-serif;font-size:2.5rem;margin-bottom:1rem;z-index:1;}
+      .game-over-screen.win h1{color:#4caf50;text-shadow:0 0 30px rgba(76,175,80,0.5);}.game-over-screen.lose h1{color:#ff4444;text-shadow:0 0 30px rgba(255,68,68,0.5);}
+      .result-time{color:#ffcc00;font-size:1.2rem;margin-bottom:0.5rem;z-index:1;}.result-reason{color:#ff8800;font-size:1.2rem;margin-bottom:0.5rem;z-index:1;}.result-message{color:#888;font-size:1rem;margin-bottom:2rem;z-index:1;}
+      .play-again-btn{padding:1rem 3rem;border:none;font-family:'Orbitron',sans-serif;font-size:1.1rem;font-weight:bold;cursor:pointer;letter-spacing:2px;transition:all 0.3s;z-index:1;border-radius:4px;}
+      .play-again-btn.win{background:#4caf50;color:#000;}.play-again-btn.win:hover{box-shadow:0 0 30px rgba(76,175,80,0.5);transform:scale(1.05);}
+      .play-again-btn.lose{background:#ff4444;color:#fff;}.play-again-btn.lose:hover{box-shadow:0 0 30px rgba(255,68,68,0.5);transform:scale(1.05);}
+      .result-team{font-family:'Orbitron',sans-serif;color:#ffcc00;letter-spacing:2px;margin-bottom:0.75rem;z-index:1;}
+      .stars-row{font-size:4rem;line-height:1;margin:0.25rem 0 0.5rem;z-index:1;}.star{color:#333;display:inline-block;margin:0 0.2rem;}.star.on{color:#333;animation:starPop 0.5s ease forwards;}
+      @keyframes starPop{0%{transform:scale(0.3);color:#333;}60%{transform:scale(1.5);color:#ffe066;}100%{transform:scale(1);color:#ffcc00;text-shadow:0 0 25px rgba(255,204,0,0.7);}}
+      .new-best{font-family:'Orbitron',sans-serif;color:#ffcc00;z-index:1;margin-bottom:0.5rem;animation:titlePulse 1s ease-in-out infinite;}.old-best{color:#888;z-index:1;margin-bottom:0.5rem;}
+      .result-card{z-index:1;background:rgba(20,20,35,0.9);border:1px solid #333;border-radius:8px;padding:0.75rem 1.25rem;margin:0.4rem 0;width:min(440px,92vw);text-align:left;}
+      .check-row,.mod-row{display:flex;gap:0.6rem;align-items:center;padding:0.25rem 0;color:#777;}.check-row.ok{color:#eee;}.check-row em{color:#888;font-style:normal;font-size:0.85em;}
+      .mod-row{color:#ddd;}.mod-name{flex:1;}.mod-x{font-size:0.8rem;}
+      .result-buttons{display:flex;flex-direction:column;gap:0.6rem;margin-top:1rem;z-index:1;width:min(440px,92vw);}
+      .play-again-btn.plain{background:#2a2a45;color:#eee;border:1px solid #555;}.play-again-btn.ghost{background:transparent;color:#888;border:1px solid #444;padding:0.6rem;font-size:0.9rem;}
+      .team-btn{font-family:'Orbitron',sans-serif;font-size:1rem;padding:0.6rem 1rem;background:rgba(255,204,0,0.08);border:1px dashed #ffcc00;color:#ffcc00;cursor:pointer;letter-spacing:1px;}.team-btn span{display:block;font-family:'Share Tech Mono',monospace;font-size:0.65rem;color:#998;letter-spacing:0;margin-top:0.15rem;}
+      .menu-btn.tertiary{border-color:#666;color:#888;font-size:0.85rem;padding:0.6rem 2rem;}.menu-btn.tertiary:hover{background:#666;color:#000;}
+      .team-tag{color:#ffcc00;font-family:'Orbitron',sans-serif;font-size:0.8rem;margin-bottom:0.2rem;letter-spacing:1px;}
+      .mission-total{text-align:center;color:#ffcc00;font-family:'Orbitron',sans-serif;font-size:1.3rem;margin:-1rem 0 1.25rem;}
+      .mission-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:0.75rem;}
+      .mission-card{position:relative;display:flex;flex-direction:column;align-items:center;gap:0.25rem;padding:0.9rem 0.5rem;background:#1a1a2e;border:2px solid #333;border-radius:8px;color:#ccc;cursor:pointer;font-family:'Share Tech Mono',monospace;transition:all 0.2s;}
+      .mission-card:hover{border-color:#888;transform:translateY(-2px);}.mission-card.done{border-color:#4caf50;}.mission-card.next{border-color:#ffcc00;box-shadow:0 0 18px rgba(255,204,0,0.25);}
+      .mission-num{font-family:'Orbitron',sans-serif;font-size:1.8rem;font-weight:900;color:#ff4444;}.mission-name{font-size:0.95rem;color:#eee;}
+      .mission-stars{color:#ffcc00;font-size:1.2rem;letter-spacing:2px;}.mission-stars i{color:#333;font-style:normal;}.mission-meta{font-size:0.65rem;color:#777;}
+      .mission-next{position:absolute;top:-0.6rem;right:-0.4rem;background:#ffcc00;color:#000;font-size:0.6rem;font-weight:bold;padding:0.1rem 0.4rem;border-radius:4px;}
+      .locked-module{min-height:180px;display:flex;align-items:center;justify-content:center;border-style:dashed;background:repeating-linear-gradient(45deg,#16162a,#16162a 12px,#1c1c33 12px,#1c1c33 24px);}
+      .lock-face{text-align:center;color:#888;padding:1rem;}.lock-icon{font-size:3rem;}.lock-title{font-family:'Orbitron',sans-serif;color:#ffcc00;margin:0.4rem 0 0.2rem;letter-spacing:2px;}.lock-sub{font-size:0.8rem;}
+      .module-wrapper.finale:not(.success){border-color:#ff8800;box-shadow:0 0 22px rgba(255,136,0,0.35);animation:finaleIn 0.6s ease;}
+      @keyframes finaleIn{0%{transform:scale(0.92);}60%{transform:scale(1.04);}100%{transform:scale(1);}}
+      .bomb-container{border-width:4px;}
+      .bomb-plate{display:flex;align-items:center;gap:0.9rem;}.battery-row{display:flex;gap:3px;align-items:flex-end;}
+      .sticker{display:inline-flex;background:#f6f4ef;border-radius:8px;padding:4px;transform:rotate(-6deg);box-shadow:1px 2px 4px rgba(0,0,0,0.5);}
+      .modules-grid{transition:filter 0.25s;}.modules-grid.lights-out{filter:brightness(0.06);animation:flicker 0.5s steps(2) 1;}
+      @keyframes flicker{0%{filter:brightness(1);}25%{filter:brightness(0.06);}50%{filter:brightness(0.8);}100%{filter:brightness(0.06);}}
+      .quiz-box{border-style:dashed;}.quiz-box.awake{border-color:#ff8800;border-style:solid;box-shadow:0 0 22px rgba(255,136,0,0.4);animation:finaleIn 0.5s ease;}
+      .quiz-text{font-size:1.15rem;color:#fff;text-align:center;margin:0.25rem 0 0.6rem;line-height:1.4;}.quiz-sleep{text-align:center;font-size:2.5rem;opacity:0.5;padding:1rem 0;}
+      .quiz-bar{height:8px;background:#333;border-radius:4px;overflow:hidden;margin-bottom:0.75rem;}.quiz-bar span{display:block;height:100%;background:#ff8800;transition:width 1s linear;}
+      .alarm-clock{position:fixed;right:1.25rem;bottom:1.25rem;z-index:80;display:flex;flex-direction:column;align-items:center;gap:0.1rem;padding:0.75rem 1rem;background:#ff4444;color:#fff;border:3px solid #fff;border-radius:16px;font-family:'Orbitron',sans-serif;font-weight:bold;cursor:pointer;animation:alarmShake 0.15s linear infinite;}
+      .alarm-clock span{font-size:3rem;line-height:1;}
+      @keyframes alarmShake{0%{transform:rotate(-7deg);}50%{transform:rotate(7deg);}100%{transform:rotate(-7deg);}}
+      .fun-row{display:flex;align-items:center;gap:0.75rem;margin-top:1.5rem;color:#888;font-size:0.75rem;flex-wrap:wrap;}
+      .version-tag{position:absolute;bottom:1rem;left:0;right:0;font-size:0.75rem;color:#888;letter-spacing:2px;}
+      .manual-code-tag{font-size:0.65rem;color:#888;letter-spacing:1px;margin-top:0.15rem;}
+      .print-btn{position:fixed;top:1rem;right:1rem;z-index:100;padding:0.5rem 1rem;border:1px solid #f1c40f;background:#f1c40f;color:#000;cursor:pointer;font-family:'Share Tech Mono',monospace;border-radius:4px;font-weight:bold;}
+      .manual-stamp{text-align:center;font-size:0.75rem;color:#aaa;letter-spacing:2px;padding-bottom:0.5rem;}
+      .mk-book-title{font-size:0.95rem;margin:0.8rem 0 0.3rem;border-bottom:1px solid #999;}
+      .mk-entry{margin:0.4rem 0 0.6rem;}.mk-entry h4{font-size:0.85rem;margin-bottom:0.2rem;}
+      .mk-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:0.6rem;}
+      .print-manual{display:none;}
+      @media print{
+        @page{size:A4;margin:10mm 12mm;}
+        html,body,.app{background:#fff!important;color:#000!important;min-height:0!important;}
+        .no-print,.app>*:not(div),.app>div>*:not(.print-manual){display:none!important;}
+        .print-manual{display:block;}
+        *{-webkit-print-color-adjust:exact;print-color-adjust:exact;}
+        .pm-frame{width:100%;border-collapse:collapse;}.pm-frame>thead>tr>td,.pm-frame>tbody>tr>td{padding:0;}
+        .pm-stamp{display:flex;justify-content:space-between;font:9pt 'Share Tech Mono',monospace;color:#444;border-bottom:1px solid #999;padding-bottom:2mm;margin-bottom:3mm;}
+        .pm-cover{font-family:Georgia,serif;text-align:center;margin-bottom:6mm;}.pm-cover h1{font-size:20pt;border-bottom:3px double #333;padding-bottom:2mm;}
+        .pm-cover p{font-size:10pt;margin:2mm 0;}.pm-meta{color:#666;font-style:italic;}
+        .pm-id{display:flex;justify-content:center;gap:6mm;margin:4mm 0;}.pm-id div{border:2px solid #000;border-radius:2mm;padding:2mm 5mm;display:flex;flex-direction:column;}
+        .pm-id small{font-size:7pt;letter-spacing:1px;color:#555;}.pm-id b{font:bold 16pt 'Share Tech Mono',monospace;letter-spacing:2px;}
+        .print-manual .manual-page-content{max-width:none;padding:0;background:#fff;min-height:0;line-height:1.4;}
+        .print-manual .manual-section{border:none;border-radius:0;margin:0 0 5mm;overflow:visible;}
+        .print-manual .manual-section h2{background:#e8e0d0;border:1px solid #999;font-size:12pt;padding:1.5mm 3mm;break-after:avoid;}
+        .print-manual .manual-section>div{padding:2mm 1mm;}
+        .print-manual .manual-section p{font-size:10pt;}
+        .print-manual table,.print-manual .mk-entry,.print-manual .fp-page,.print-manual .ms-plan{break-inside:avoid;}
+        .print-manual .manual-table{font-size:9pt;}
+        .print-manual .lr-rules,.print-manual .fp-page{background:#fff!important;color:#000!important;border:1px solid #999;}
+        .print-manual .lr-rules p,.print-manual .fp-page p{font-size:10pt;}
+        .print-manual .mk-grid{grid-template-columns:1fr 1fr;}
+        .print-manual .mk-book-title{break-after:avoid;page-break-after:avoid;}
+        .print-manual .ms-wall{color:#000!important;}
+      }
+      .manual-key{padding:0.4rem 0.3rem;background:#fff;border:1px solid #888;border-radius:4px;cursor:pointer;font-family:'Share Tech Mono',monospace;font-size:0.8rem;color:#222;}.manual-key:disabled{opacity:0.45;cursor:default;}
+      .manual-input{width:5rem;padding:0.4rem;font-size:1.1rem;font-family:'Share Tech Mono',monospace;letter-spacing:3px;text-align:center;border:2px solid #888;border-radius:4px;}
+      .manual-readout{min-height:1.6rem;font-size:0.9rem!important;}.manual-answer{background:#fff7d6;border-left:4px solid #f1c40f;padding:0.4rem 0.5rem;font-size:0.85rem!important;margin:0.3rem 0;}
+      .test-tools{display:flex;gap:0.3rem;padding:0.25rem;background:#3a3200;}.test-tools button{flex:1;font-size:0.65rem;padding:0.2rem;background:#f1c40f;border:none;cursor:pointer;font-family:'Share Tech Mono',monospace;}
+      .finale-tag{background:#ff8800;color:#000;font-family:'Orbitron',sans-serif;font-size:0.7rem;font-weight:bold;text-align:center;padding:0.2rem;letter-spacing:2px;}
+      .manual-filter{display:flex;flex-wrap:wrap;gap:0.35rem;align-items:center;justify-content:center;padding:3.5rem 1rem 0.5rem;font-size:0.8rem;color:#aaa;}
+      .manual-filter button{min-width:2.2rem;padding:0.4rem 0.6rem;background:#1a1a2e;border:1px solid #444;color:#aaa;cursor:pointer;font-family:'Share Tech Mono',monospace;border-radius:4px;}.manual-filter button.active{background:#f1c40f;border-color:#f1c40f;color:#000;font-weight:bold;}
+      .manual-filter em{flex-basis:100%;text-align:center;font-style:normal;color:#f1c40f;}
+      .confetti-bg{position:absolute;inset:0;background:radial-gradient(circle,rgba(76,175,80,0.15) 0%,transparent 70%);animation:bgPulse 2s ease-in-out infinite;}
+      .explosion-bg{position:absolute;inset:0;background:radial-gradient(circle,rgba(255,100,0,0.2) 0%,transparent 70%);animation:bgPulse 2s ease-in-out infinite;}
+      @keyframes bgPulse{0%,100%{transform:scale(1);opacity:0.5;}50%{transform:scale(1.3);opacity:0.3;}}
+      @media(max-width:768px){.game-title{font-size:2rem;}.bomb-icon{font-size:5rem;}.bomb-header{flex-direction:column;text-align:center;}.timer-display{font-size:2rem;}.modules-grid{grid-template-columns:1fr;}.manual-overlay{width:100%;}.menu-btn{padding:0.8rem 2rem;font-size:0.9rem;}.settings-panel{margin:1rem;padding:1.5rem;}}
+    `}</style>
+    {screen==="menu"&&(<div className="menu-screen"><div className="bomb-icon">💣</div><h1 className="game-title">ESL BOMB SQUAD</h1><p className="demo-tag">DEMO</p><p className="game-subtitle">Communication Under Pressure</p>{TEST_MODE&&<p style={{color:"#f1c40f",marginTop:"-2rem",marginBottom:"2rem",letterSpacing:"3px"}}>TEST MODE</p>}<div className="menu-buttons"><button className="team-btn" onClick={nextTeam}>TEAM: {team[0]} {team[1]} <span>tap to change</span></button><button className="menu-btn primary" onClick={()=>setScreen("missions")}>🎯 MISSIONS</button><button className="menu-btn secondary" onClick={()=>{setManualOnly(null);setScreen("manual-only");}}>📖 EXPERT MANUAL</button></div><p className="version-tag">v{MANUAL.VERSION} · MANUAL CODE {getManualCode()}</p></div>)}
+    {screen==="missions"&&(<div><button className="back-btn" onClick={()=>setScreen("menu")}>← Back</button><MissionSelect progress={progress} fun={fun} setFun={setFun} onPick={m=>startGame({mission:m,fun})}/></div>)}
+    {screen==="settings"&&(<div><button className="back-btn" onClick={()=>setScreen("menu")}>← Back</button><SettingsPanel onStartGame={startGame} fun={fun} setFun={setFun}/></div>)}
+    {screen==="playing"&&config&&(<div className="game-layout"><button className="back-btn" onClick={reset}>← Quit</button>{TEST_MODE&&<button className={`manual-toggle ${showManual?"active":""}`} onClick={()=>setShowManual(!showManual)}>{showManual?"✕ Close Manual":"📖 Manual (TEST)"}</button>}<BombComponent key={gameKey} config={config} team={team} onGameEnd={endGame}/>{TEST_MODE&&<div className={`manual-overlay ${showManual?"visible":""}`}><ExpertManual only={[...new Set(config.modules.map(m=>m.baseId))]}/></div>}</div>)}
+    {screen==="manual-only"&&(<div><div className="no-print"><button className="back-btn" onClick={()=>setScreen("menu")}>← Back</button>
+      <button className="print-btn" onClick={()=>printManual(manualOnly&&manualOnly.label)}>🖨 PRINT / SAVE PDF</button>
+      <div className="manual-filter"><span>SHOW:</span><button className={!manualOnly?"active":""} onClick={()=>setManualOnly(null)}>ALL</button>{manualOnly&&!manualOnly.label.startsWith("MISSION")&&<button className="active">{manualOnly.label}</button>}{MISSIONS.map(m=>(<button key={m.id} className={manualOnly&&manualOnly.label===`MISSION ${m.num}`?"active":""} onClick={()=>setManualOnly({label:`MISSION ${m.num}`,ids:m.modules})}>{m.num}</button>))}{manualOnly&&manualOnly.label.startsWith("MISSION")&&<em>{manualOnly.label}: {MISSIONS[Number(manualOnly.label.slice(8))-1].name}</em>}</div>
+      <p className="manual-stamp">v{MANUAL.VERSION} · MANUAL CODE {getManualCode()}</p>
+      <ExpertManual key={manualOnly?manualOnly.label:"all"} only={manualOnly?manualOnly.ids:null}/></div>
+      <PrintManual only={manualOnly?manualOnly.ids:null} label={manualOnly?manualOnly.label:null}/></div>)}
+    {screen==="result"&&gameResult&&config&&<ResultsScreen result={gameResult.result} best={gameResult.best} isNewBest={gameResult.isNewBest} config={config} team={team} onReplay={()=>{SFX.unlock();startGame(config.spec);}} onSwap={()=>openManualFor(config)} onNext={nextMission?()=>startGame({mission:nextMission,fun:config.fun}):null} onMenu={reset}/>}
+  </div>);
+}
+
+getManualCode(); // work the code out once, before the first render (it renders the paper manual off-screen)
+ReactDOM.createRoot(document.getElementById('root')).render(React.createElement(App));
+</script>
+</body>
+</html>
